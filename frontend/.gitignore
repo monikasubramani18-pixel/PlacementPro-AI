@@ -1,0 +1,19 @@
+# Environment files
+.env
+.env.local
+*.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+dist/
+
+# Uploaded files
+uploads/
+
+# IDE
+.vscode/
