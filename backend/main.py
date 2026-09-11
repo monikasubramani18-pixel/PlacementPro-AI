@@ -35,10 +35,10 @@ Base = declarative_base()
 # Step 17 — Password hashing + JWT authentication config
 # --------------------------------------------------------------------
 
-SECRET_KEY = os.getenv(
-    "SECRET_KEY",
-    "development-secret-change-before-deployment"
-)
+SECRET_KEY = os.getenv("SECRET_KEY")
+
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY is not configured")
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
@@ -271,12 +271,14 @@ class LoginData(BaseModel):
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:5173"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=[FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
