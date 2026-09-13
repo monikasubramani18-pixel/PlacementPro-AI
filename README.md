@@ -2,20 +2,15 @@
 
 An AI-powered placement preparation platform designed to help students track and improve their placement readiness.
 
-## 🌐 Live Demo
+## Live Demo
 
-Frontend:
-https://placement-pro-ai-sigma.vercel.app
+- Frontend: [PlacementPro AI](https://placement-pro-ai-sigma.vercel.app)
+- Backend API: [Render Backend](https://placementpro-ai-6tj2.onrender.com)
+- API Documentation: [FastAPI Swagger Docs](https://placementpro-ai-6tj2.onrender.com/docs)
 
-Backend API:
-https://placementpro-ai-6tj2.onrender.com
+## Features
 
-API Documentation:
-https://placementpro-ai-6tj2.onrender.com/docs
-
-## 🚀 Features
-
-- Student Registration & Login
+- Student Registration and Login
 - JWT Authentication
 - Student Profile Management
 - Resume Analysis
@@ -27,9 +22,10 @@ https://placementpro-ai-6tj2.onrender.com/docs
 - Company Preparation
 - Placement Readiness Score
 
-## 🛠️ Technologies
+## Technologies
 
 ### Frontend
+
 - React
 - JavaScript
 - JSX
@@ -37,6 +33,7 @@ https://placementpro-ai-6tj2.onrender.com/docs
 - Vite
 
 ### Backend
+
 - Python
 - FastAPI
 - SQLAlchemy
@@ -44,32 +41,45 @@ https://placementpro-ai-6tj2.onrender.com/docs
 - bcrypt
 
 ### Database
+
 - PostgreSQL
 - Neon
 
 ### Deployment
+
 - Vercel
 - Render
 
-## 📊 Placement Readiness
+## Placement Readiness
 
-The dashboard combines:
+The dashboard combines the following areas to provide an overall placement readiness score:
 
 - Resume performance
 - Coding performance
 - Aptitude performance
 - Project completion
 
-to provide an overall placement readiness score.
-
-## 🔐 Security
+## Security
 
 - Passwords are securely hashed using bcrypt.
 - JWT-based authentication protects student-specific APIs.
 - Environment variables are used for sensitive configuration.
 - Database credentials are not stored in the frontend.
 
-## 👩‍💻 Developer
+## Project Structure
 
-Monika  
-B.Tech Information Technology
+```text
+PlacementPro-AI/
+├── backend/
+│   ├── main.py
+│   ├── requirements.txt
+│   └── .env
+│
+├── frontend/
+│   ├── src/
+│   ├── package.json
+│   └── vite.config.js
+│
+├── .gitignore
+└── README.md
+ 
