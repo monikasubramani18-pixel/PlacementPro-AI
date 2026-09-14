@@ -21,7 +21,11 @@ load_dotenv(
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=300
+)
 
 SessionLocal = sessionmaker(
     autocommit=False,
@@ -446,11 +450,12 @@ def create_student(student: StudentCreate):
 
 
 @app.get("/students")
-def get_students():
+def get_students(
+    current_student_id: int = Depends(get_current_student)
+):
     db = SessionLocal()
-
     students = db.query(Student).all()
-
+    ...
     result = []
 
     for student in students:
