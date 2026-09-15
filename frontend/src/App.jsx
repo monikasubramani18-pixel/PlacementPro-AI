@@ -848,6 +848,8 @@ function ResumePage({ student }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
+  const [aiRecommendations, setAiRecommendations] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   useEffect(() => {
     const loadHistory = async () => {
@@ -870,6 +872,41 @@ function ResumePage({ student }) {
 
     loadHistory();
   }, [student]);
+
+  const getAIRecommendations = async (file) => {
+    if (!student?.id) return;
+
+    setAiLoading(true);
+
+    try {
+      const formData = new FormData();
+
+      formData.append("file", file);
+      formData.append("target_role", student.target_role || "Software Developer");
+      formData.append("student_id", student.id);
+
+      const response = await apiFetch(
+        `${API_BASE}/resume/recommendations`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to get recommendations");
+      }
+
+      setAiRecommendations(data);
+    } catch (error) {
+      console.error("AI recommendation error:", error);
+      alert(error.message);
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   const analyzeResume = async () => {
     if (!file) {
@@ -908,6 +945,8 @@ function ResumePage({ student }) {
       }
 
       setResult(data);
+
+      await getAIRecommendations(file);
 
       const historyResponse = await apiFetch(
         `${API_BASE}/resume/history/${student.id}`
@@ -1312,6 +1351,85 @@ function ResumePage({ student }) {
               </div>
             )}
 
+          </div>
+        )}
+
+        {aiLoading && (
+          <div className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
+            <p className="font-semibold text-blue-700">
+              🤖 AI is analyzing your resume...
+            </p>
+            <p className="mt-1 text-sm text-blue-600">
+              Checking your skills and placement improvement areas.
+            </p>
+          </div>
+        )}
+
+        {aiRecommendations && !aiLoading && (
+          <div className="mt-6 rounded-xl border bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-bold">
+              🤖 AI Placement Recommendations
+            </h2>
+
+            <p className="mt-2 text-sm text-gray-600">
+              Target Role:{" "}
+              <span className="font-semibold">
+                {aiRecommendations.target_role}
+              </span>
+            </p>
+
+            <div className="mt-5">
+              <h3 className="font-semibold text-green-700">
+                ✅ Detected Skills
+              </h3>
+
+              <div className="mt-2 flex flex-wrap gap-2">
+                {aiRecommendations.detected_skills.map((skill) => (
+                  <span
+                    key={skill}
+                    className="rounded-full bg-green-100 px-3 py-1 text-sm text-green-700"
+                  >
+                    {skill}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <h3 className="font-semibold text-red-700">
+                ⚠️ Missing Skills
+              </h3>
+
+              <div className="mt-2 flex flex-wrap gap-2">
+                {aiRecommendations.missing_skills.map((skill) => (
+                  <span
+                    key={skill}
+                    className="rounded-full bg-red-100 px-3 py-1 text-sm text-red-700"
+                  >
+                    {skill}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <h3 className="font-semibold text-blue-700">
+                🚀 Improvement Recommendations
+              </h3>
+
+              <ul className="mt-2 space-y-2">
+                {aiRecommendations.recommendations.map(
+                  (recommendation, index) => (
+                    <li
+                      key={index}
+                      className="rounded-lg bg-blue-50 p-3 text-sm text-gray-700"
+                    >
+                      {recommendation}
+                    </li>
+                  )
+                )}
+              </ul>
+            </div>
           </div>
         )}
 

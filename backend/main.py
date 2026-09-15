@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from pypdf import PdfReader
 from docx import Document
 import bcrypt
+import json
 from jose import JWTError, jwt
 
 load_dotenv(
@@ -903,7 +904,113 @@ def analyze_resume_text(text: str, target_role: str = "Software Developer"):
 
         "suggestions": suggestions
     }
+def generate_placement_recommendations(
+    resume_text: str,
+    target_role: str,
+    resume_score: float
+):
+    text = resume_text.lower()
+    role = target_role.lower()
 
+    role_skills = {
+        "software developer": [
+            "Python",
+            "Java",
+            "JavaScript",
+            "DSA",
+            "SQL",
+            "DBMS",
+            "Git"
+        ],
+        "frontend developer": [
+            "HTML",
+            "CSS",
+            "JavaScript",
+            "React",
+            "Git"
+        ],
+        "backend developer": [
+            "Python",
+            "Java",
+            "FastAPI",
+            "SQL",
+            "PostgreSQL",
+            "REST API",
+            "Git"
+        ],
+        "data analyst": [
+            "Python",
+            "SQL",
+            "Excel",
+            "Power BI",
+            "Statistics"
+        ],
+        "data scientist": [
+            "Python",
+            "SQL",
+            "Machine Learning",
+            "Statistics",
+            "Pandas",
+            "NumPy"
+        ]
+    }
+
+    selected_skills = role_skills["software developer"]
+
+    for role_name, skills in role_skills.items():
+        if role_name in role:
+            selected_skills = skills
+            break
+
+    detected_skills = [
+        skill
+        for skill in selected_skills
+        if skill.lower() in text
+    ]
+
+    missing_skills = [
+        skill
+        for skill in selected_skills
+        if skill not in detected_skills
+    ]
+
+    recommendations = []
+
+    if missing_skills:
+        recommendations.append(
+            f"Learn or strengthen: {', '.join(missing_skills[:4])}"
+        )
+
+    if "dsa" in [skill.lower() for skill in selected_skills]:
+        if "data structures" not in text and "algorithm" not in text:
+            recommendations.append(
+                "Practice Data Structures and Algorithms regularly"
+            )
+
+    if "git" in [skill.lower() for skill in selected_skills]:
+        if "github" not in text:
+            recommendations.append(
+                "Add GitHub projects to demonstrate practical experience"
+            )
+
+    if resume_score < 70:
+        recommendations.append(
+            "Improve resume completeness and project descriptions"
+        )
+
+    if not recommendations:
+        recommendations.append(
+            "Your resume matches the selected role well. "
+            "Continue improving projects and interview preparation."
+        )
+
+    return {
+        "target_role": target_role,
+        "resume_score": resume_score,
+        "detected_skills": detected_skills,
+        "missing_skills": missing_skills,
+        "recommendations": recommendations
+    }
 
 @app.post("/resume/analyze")
 async def analyze_resume(
@@ -966,6 +1073,57 @@ async def analyze_resume(
     db.close()
 
     return result
+
+
+@app.post("/resume/recommendations")
+async def get_resume_recommendations(
+    file: UploadFile = File(...),
+    target_role: str = Form("Software Developer"),
+    student_id: int = Form(...),
+    current_student_id: int = Depends(get_current_student)
+):
+
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    allowed_types = [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ]
+
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and DOCX files are allowed"
+        )
+
+    file_path = RESUME_DIR / file.filename
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    text = extract_text(file_path)
+
+    if not text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract any text from this file"
+        )
+
+    analysis = analyze_resume_text(text, target_role)
+
+    recommendations = generate_placement_recommendations(
+        text,
+        target_role,
+        analysis["resume_score"]
+    )
+
+    return recommendations
+
+
 @app.get("/resume/history/{student_id}")
 def get_resume_history(
     student_id: int,
