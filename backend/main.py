@@ -1,12 +1,12 @@
 import os
-import shutil
+import uuid
 
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import create_engine, Column, Integer, String, Float
+from sqlalchemy import create_engine, Column, Integer, String, Float, Text, func
 from sqlalchemy.orm import declarative_base, sessionmaker
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -117,6 +117,8 @@ class ResumeAnalysis(Base):
     filename = Column(String)
     target_role = Column(String)
 
+    detected_skills = Column(Text)
+
     resume_score = Column(Integer)
     skills_score = Column(Integer)
     education_score = Column(Integer)
@@ -208,6 +210,7 @@ class InterviewAttempt(Base):
     student_id = Column(Integer)
     question_id = Column(Integer)
     answer = Column(String)
+    score = Column(Integer, default=0)
 
 
 class ProjectProgress(Base):
@@ -240,6 +243,16 @@ class Company(Base):
     package = Column(String)
     eligibility = Column(String)
     skills = Column(String)
+
+
+class CompanyPreparation(Base):
+    __tablename__ = "company_preparation"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer)
+    company_id = Column(Integer)
+    skill = Column(String)
+    completed = Column(Integer, default=0)
 
 
 class StudentCreate(BaseModel):
@@ -450,31 +463,6 @@ def create_student(student: StudentCreate):
     }
 
 
-@app.get("/students")
-def get_students(
-    current_student_id: int = Depends(get_current_student)
-):
-    db = SessionLocal()
-    students = db.query(Student).all()
-    ...
-    result = []
-
-    for student in students:
-        result.append({
-            "id": student.id,
-            "name": student.name,
-            "email": student.email,
-            "degree": student.degree,
-            "branch": student.branch,
-            "cgpa": student.cgpa,
-            "target_role": student.target_role
-        })
-
-    db.close()
-
-    return result
-
-
 @app.put("/students/{student_id}")
 def update_student(
     student_id: int,
@@ -520,6 +508,41 @@ def update_student(
 RESUME_DIR = Path("uploads/resumes")
 RESUME_DIR.mkdir(parents=True, exist_ok=True)
 
+ALLOWED_RESUME_EXTENSIONS = {".pdf", ".docx"}
+MAX_RESUME_SIZE = 5 * 1024 * 1024  # 5 MB
+
+
+async def validate_and_save_resume(file: UploadFile) -> Path:
+    """
+    Validates a resume upload by file extension and size, then saves it
+    under a generated (non-user-controlled) filename.
+
+    Returns the path the file was saved to.
+    """
+    file_extension = Path(file.filename or "").suffix.lower()
+
+    if file_extension not in ALLOWED_RESUME_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and DOCX files are allowed."
+        )
+
+    file_content = await file.read()
+
+    if len(file_content) > MAX_RESUME_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail="File size must be less than 5 MB."
+        )
+
+    safe_filename = f"{uuid.uuid4()}{file_extension}"
+    file_path = RESUME_DIR / safe_filename
+
+    with open(file_path, "wb") as buffer:
+        buffer.write(file_content)
+
+    return file_path
+
 
 def extract_text(file_path):
 
@@ -537,27 +560,13 @@ def extract_text(file_path):
 @app.post("/resume/upload")
 async def upload_resume(file: UploadFile = File(...)):
 
-    allowed_types = [
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ]
-
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF and DOCX files are allowed"
-        )
-
-    file_path = RESUME_DIR / file.filename
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    file_path = await validate_and_save_resume(file)
 
     text = extract_text(file_path)
 
     return {
         "message": "Resume uploaded successfully",
-        "filename": file.filename,
+        "filename": file_path.name,
         "text": text
     }
 
@@ -1026,21 +1035,7 @@ async def analyze_resume(
             detail="Access denied"
         )
 
-    allowed_types = [
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ]
-
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF and DOCX files are allowed"
-        )
-
-    file_path = RESUME_DIR / file.filename
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    file_path = await validate_and_save_resume(file)
 
     text = extract_text(file_path)
 
@@ -1058,6 +1053,7 @@ async def analyze_resume(
         student_id=student_id,
         filename=file.filename,
         target_role=target_role,
+        detected_skills=json.dumps(result["detected_skills"]),
         resume_score=result["resume_score"],
         skills_score=result["score_breakdown"]["skills"],
         education_score=result["score_breakdown"]["education"],
@@ -1089,21 +1085,7 @@ async def get_resume_recommendations(
             detail="Access denied"
         )
 
-    allowed_types = [
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ]
-
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF and DOCX files are allowed"
-        )
-
-    file_path = RESUME_DIR / file.filename
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    file_path = await validate_and_save_resume(file)
 
     text = extract_text(file_path)
 
@@ -2061,25 +2043,151 @@ def seed_interview_questions():
 seed_interview_questions()
 
 
-@app.get("/interview/questions")
-def get_interview_questions():
+ROLE_SPECIFIC_INTERVIEW_QUESTIONS = [
+    # Data Analyst
+    {
+        "question": "What is the difference between INNER JOIN and LEFT JOIN in SQL?",
+        "category": "data",
+        "difficulty": "Medium"
+    },
+    {
+        "question": "What is the difference between WHERE and HAVING clauses?",
+        "category": "sql",
+        "difficulty": "Medium"
+    },
+    {
+        "question": "How would you handle missing values in a dataset?",
+        "category": "data",
+        "difficulty": "Easy"
+    },
+    # Frontend Developer
+    {
+        "question": "What is the difference between props and state in React?",
+        "category": "frontend",
+        "difficulty": "Easy"
+    },
+    {
+        "question": "What is the Virtual DOM?",
+        "category": "frontend",
+        "difficulty": "Medium"
+    },
+    {
+        "question": "What is the difference between CSS Flexbox and Grid?",
+        "category": "frontend",
+        "difficulty": "Medium"
+    },
+    # Backend Developer
+    {
+        "question": "What is the difference between authentication and authorization?",
+        "category": "backend",
+        "difficulty": "Easy"
+    },
+    {
+        "question": "What is a REST API?",
+        "category": "backend",
+        "difficulty": "Easy"
+    },
+    {
+        "question": "What is database indexing and why is it useful?",
+        "category": "backend",
+        "difficulty": "Medium"
+    },
+    # Data Scientist
+    {
+        "question": "What is the difference between supervised and unsupervised learning?",
+        "category": "machine learning",
+        "difficulty": "Easy"
+    },
+    {
+        "question": "What is overfitting in machine learning?",
+        "category": "machine learning",
+        "difficulty": "Medium"
+    },
+    {
+        "question": "What is the difference between classification and regression?",
+        "category": "data science",
+        "difficulty": "Easy"
+    }
+]
+
+
+def seed_role_specific_interview_questions():
     db = SessionLocal()
 
-    questions = db.query(InterviewQuestion).all()
+    existing_questions = {
+        q.question for q in db.query(InterviewQuestion).all()
+    }
 
-    result = []
+    for q in ROLE_SPECIFIC_INTERVIEW_QUESTIONS:
+        if q["question"] not in existing_questions:
+            db.add(InterviewQuestion(**q))
 
-    for q in questions:
-        result.append({
-            "id": q.id,
-            "question": q.question,
-            "category": q.category,
-            "difficulty": q.difficulty
-        })
+    db.commit()
+    db.close()
+
+
+seed_role_specific_interview_questions()
+
+
+@app.get("/interview/questions")
+def get_interview_questions(
+    target_role: str = "Software Developer",
+    current_student_id: int = Depends(get_current_student)
+):
+    db = SessionLocal()
+
+    role = target_role.lower()
+
+    role_categories = {
+        "software developer": [
+            "technical",
+            "coding",
+            "hr"
+        ],
+        "frontend developer": [
+            "frontend",
+            "technical",
+            "hr"
+        ],
+        "backend developer": [
+            "backend",
+            "technical",
+            "hr"
+        ],
+        "data analyst": [
+            "data",
+            "sql",
+            "hr"
+        ],
+        "data scientist": [
+            "data science",
+            "machine learning",
+            "hr"
+        ]
+    }
+
+    categories = role_categories.get(
+        role,
+        role_categories["software developer"]
+    )
+
+    questions = (
+        db.query(InterviewQuestion)
+        .filter(func.lower(InterviewQuestion.category).in_(categories))
+        .all()
+    )
 
     db.close()
 
-    return result
+    return [
+        {
+            "id": question.id,
+            "question": question.question,
+            "category": question.category,
+            "difficulty": question.difficulty
+        }
+        for question in questions
+    ]
 
 
 @app.post("/interview/{student_id}/submit")
@@ -2134,6 +2242,295 @@ def submit_interview_answer(
     return {
         "message": "Answer submitted successfully",
         "question_id": question_id
+    }
+
+
+def evaluate_interview_answer(
+    question: str,
+    answer: str,
+    category: str
+):
+    answer_text = answer.lower().strip()
+
+    score = 0
+    feedback = []
+
+    # Basic answer quality
+    word_count = len(answer_text.split())
+
+    if word_count >= 40:
+        score += 30
+    elif word_count >= 20:
+        score += 20
+    elif word_count >= 10:
+        score += 10
+    else:
+        feedback.append(
+            "Try to provide a more detailed answer."
+        )
+
+    # Technical keywords
+    technical_keywords = [
+        "because",
+        "example",
+        "approach",
+        "method",
+        "solution",
+        "performance",
+        "advantage",
+        "disadvantage"
+    ]
+
+    keyword_count = sum(
+        1 for keyword in technical_keywords
+        if keyword in answer_text
+    )
+
+    score += min(keyword_count * 5, 30)
+
+    if keyword_count < 2:
+        feedback.append(
+            "Include concepts, reasoning, or examples "
+            "to strengthen your answer."
+        )
+
+    # Category-specific evaluation
+    if category.lower() in [
+        "technical",
+        "coding",
+        "frontend",
+        "backend",
+        "sql",
+        "data",
+        "data science",
+        "machine learning"
+    ]:
+        if any(
+            word in answer_text
+            for word in [
+                "algorithm",
+                "database",
+                "code",
+                "function",
+                "data",
+                "system",
+                "implementation"
+            ]
+        ):
+            score += 20
+        else:
+            feedback.append(
+                "Mention relevant technical concepts "
+                "or implementation details."
+            )
+
+    else:
+        if any(
+            word in answer_text
+            for word in [
+                "experience",
+                "team",
+                "project",
+                "learn",
+                "challenge",
+                "result"
+            ]
+        ):
+            score += 20
+        else:
+            feedback.append(
+                "Support your answer with a real example "
+                "from your experience."
+            )
+
+    score = min(score, 100)
+
+    if score >= 80:
+        feedback.insert(
+            0,
+            "Excellent answer. Your response is clear and relevant."
+        )
+    elif score >= 60:
+        feedback.insert(
+            0,
+            "Good answer, but there is room for improvement."
+        )
+    else:
+        feedback.insert(
+            0,
+            "Your answer needs more detail and explanation."
+        )
+
+    return {
+        "score": score,
+        "feedback": feedback
+    }
+
+
+@app.post("/interview/evaluate")
+def evaluate_answer(
+    question_id: int,
+    answer: str,
+    current_student_id: int = Depends(get_current_student)
+):
+    db = SessionLocal()
+
+    question = (
+        db.query(InterviewQuestion)
+        .filter(InterviewQuestion.id == question_id)
+        .first()
+    )
+
+    if not question:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Interview question not found"
+        )
+
+    result = evaluate_interview_answer(
+        question.question,
+        answer,
+        question.category
+    )
+
+    attempt = (
+        db.query(InterviewAttempt)
+        .filter(
+            InterviewAttempt.student_id == current_student_id,
+            InterviewAttempt.question_id == question_id
+        )
+        .first()
+    )
+
+    if attempt:
+        attempt.score = result["score"]
+        db.commit()
+
+    db.close()
+
+    return result
+
+
+@app.get("/interview/stats/{student_id}")
+def get_interview_stats(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    attempts = (
+        db.query(InterviewAttempt)
+        .filter(InterviewAttempt.student_id == student_id)
+        .all()
+    )
+
+    db.close()
+
+    attempted = len(attempts)
+
+    if attempted == 0:
+        average_score = 0
+    else:
+        average_score = sum(
+            attempt.score for attempt in attempts
+        ) / attempted
+
+    return {
+        "attempted": attempted,
+        "average_score": round(average_score, 2)
+    }
+
+
+def generate_interview_recommendations(
+    average_score: float,
+    attempted: int
+):
+    recommendations = []
+
+    if attempted == 0:
+        recommendations.append(
+            "Start practicing interview questions regularly."
+        )
+
+    elif average_score < 40:
+        recommendations.extend([
+            "Focus on understanding the fundamentals.",
+            "Practice explaining your answers clearly.",
+            "Use examples when answering questions."
+        ])
+
+    elif average_score < 60:
+        recommendations.extend([
+            "Improve the depth of your technical answers.",
+            "Practice more interview questions.",
+            "Explain your reasoning step by step."
+        ])
+
+    elif average_score < 80:
+        recommendations.extend([
+            "Your performance is good. Focus on advanced questions.",
+            "Improve answer structure and confidence.",
+            "Add practical project examples to your answers."
+        ])
+
+    else:
+        recommendations.extend([
+            "Excellent interview performance.",
+            "Continue practicing advanced interview questions.",
+            "Focus on company-specific interview preparation."
+        ])
+
+    return recommendations
+
+
+@app.get("/interview/recommendations/{student_id}")
+def interview_recommendations(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    attempts = (
+        db.query(InterviewAttempt)
+        .filter(
+            InterviewAttempt.student_id == student_id
+        )
+        .all()
+    )
+
+    db.close()
+
+    attempted = len(attempts)
+
+    if attempted == 0:
+        average_score = 0
+    else:
+        average_score = sum(
+            attempt.score for attempt in attempts
+        ) / attempted
+
+    recommendations = generate_interview_recommendations(
+        average_score,
+        attempted
+    )
+
+    return {
+        "average_score": round(average_score, 2),
+        "attempted": attempted,
+        "recommendations": recommendations
     }
 
 
@@ -2376,6 +2773,547 @@ def get_company(company_id: int):
 
 
 # --------------------------------------------------------------------
+# Step 32 — Company Preparation Module
+# --------------------------------------------------------------------
+
+APTITUDE_SKILL_KEYWORDS = ("aptitude", "quantitative", "reasoning")
+INTERVIEW_SKILL_KEYWORDS = ("system design", "communication", "problem solving")
+
+
+def build_preparation_focus(skills_string):
+    coding_focus = []
+    aptitude_focus = []
+    interview_focus = []
+
+    for raw_skill in skills_string.split(","):
+        skill = raw_skill.strip()
+
+        if not skill:
+            continue
+
+        normalized = skill.lower()
+
+        if normalized in APTITUDE_SKILL_KEYWORDS:
+            aptitude_focus.append(skill)
+        elif normalized in INTERVIEW_SKILL_KEYWORDS:
+            interview_focus.append(skill)
+        else:
+            coding_focus.append(skill)
+
+    return coding_focus, aptitude_focus, interview_focus
+
+
+@app.get("/companies/{company_id}/preparation")
+def get_company_preparation(company_id: int):
+    db = SessionLocal()
+
+    company = db.query(Company).filter(
+        Company.id == company_id
+    ).first()
+
+    if not company:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Company not found"
+        )
+
+    coding_focus, aptitude_focus, interview_focus = build_preparation_focus(
+        company.skills
+    )
+
+    checklist = [
+        {"skill": raw_skill.strip()}
+        for raw_skill in company.skills.split(",")
+        if raw_skill.strip()
+    ]
+
+    result = {
+        "company": company.name,
+        "role": company.role,
+        "coding_focus": coding_focus,
+        "aptitude_focus": aptitude_focus,
+        "interview_focus": interview_focus,
+        "checklist": checklist
+    }
+
+    db.close()
+
+    return result
+
+
+@app.put("/companies/{company_id}/preparation/{skill}")
+def update_company_preparation(
+    company_id: int,
+    skill: str,
+    completed: bool,
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    record = (
+        db.query(CompanyPreparation)
+        .filter(
+            CompanyPreparation.student_id == student_id,
+            CompanyPreparation.company_id == company_id,
+            CompanyPreparation.skill == skill
+        )
+        .first()
+    )
+
+    if record:
+        record.completed = 1 if completed else 0
+    else:
+        record = CompanyPreparation(
+            student_id=student_id,
+            company_id=company_id,
+            skill=skill,
+            completed=1 if completed else 0
+        )
+        db.add(record)
+
+    db.commit()
+    db.close()
+
+    return {
+        "skill": skill,
+        "completed": completed
+    }
+
+
+@app.get("/companies/{company_id}/preparation/progress")
+def get_company_preparation_progress(
+    company_id: int,
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    progress = (
+        db.query(CompanyPreparation)
+        .filter(
+            CompanyPreparation.student_id == student_id,
+            CompanyPreparation.company_id == company_id,
+            CompanyPreparation.completed == 1
+        )
+        .all()
+    )
+
+    db.close()
+
+    return {
+        "completed_skills": [
+            item.skill for item in progress
+        ]
+    }
+
+
+@app.get("/students/{student_id}/company-preparation-summary")
+def get_company_preparation_summary(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    companies = db.query(Company).all()
+
+    summary = []
+
+    for company in companies:
+        total_skills = len([
+            skill.strip()
+            for skill in company.skills.split(",")
+            if skill.strip()
+        ])
+
+        completed_count = (
+            db.query(CompanyPreparation)
+            .filter(
+                CompanyPreparation.student_id == student_id,
+                CompanyPreparation.company_id == company.id,
+                CompanyPreparation.completed == 1
+            )
+            .count()
+        )
+
+        if completed_count == 0:
+            continue
+
+        percentage = (
+            round((completed_count / total_skills) * 100)
+            if total_skills > 0 else 0
+        )
+
+        summary.append({
+            "company_id": company.id,
+            "company": company.name,
+            "role": company.role,
+            "completed_skills": completed_count,
+            "total_skills": total_skills,
+            "percentage": percentage
+        })
+
+    db.close()
+
+    summary.sort(key=lambda item: item["percentage"], reverse=True)
+
+    average_percentage = (
+        round(sum(item["percentage"] for item in summary) / len(summary))
+        if summary else 0
+    )
+
+    return {
+        "companies": summary,
+        "companies_started": len(summary),
+        "average_percentage": average_percentage
+    }
+
+
+# --------------------------------------------------------------------
+# Step 33 — Company Match Engine
+# --------------------------------------------------------------------
+
+def check_company_eligibility(company, student):
+    eligibility = company.eligibility.lower()
+
+    # Zoho-style companies with no CGPA cutoff
+    if "no cgpa cutoff" in eligibility:
+        return True
+
+    # Extract CGPA requirement
+    cgpa_required = None
+
+    import re
+
+    match = re.search(
+        r"(\d+(?:\.\d+)?)\s*cgpa",
+        eligibility
+    )
+
+    if match:
+        cgpa_required = float(match.group(1))
+
+    # If no CGPA requirement is found
+    if cgpa_required is None:
+        return True
+
+    return student.cgpa >= cgpa_required
+
+
+def normalize_skill(skill):
+    skill = skill.strip().lower()
+
+    aliases = {
+        "oops": "oop",
+        "object oriented programming": "oop",
+        "object-oriented programming": "oop",
+        "js": "javascript",
+        "reactjs": "react",
+        "react.js": "react",
+        "nodejs": "node.js",
+        "postgres": "postgresql",
+        "rest": "rest api",
+        "data structures and algorithms": "dsa",
+    }
+
+    return aliases.get(skill, skill)
+
+
+def get_resume_skills(student_id, db):
+    latest_resume = (
+        db.query(ResumeAnalysis)
+        .filter(
+            ResumeAnalysis.student_id == student_id
+        )
+        .order_by(ResumeAnalysis.id.desc())
+        .first()
+    )
+
+    if not latest_resume:
+        return []
+
+    if not latest_resume.detected_skills:
+        return []
+
+    try:
+        skills = json.loads(
+            latest_resume.detected_skills
+        )
+
+        if isinstance(skills, list):
+            return skills
+
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    return []
+
+
+def calculate_company_match(company, student, db):
+
+    # -----------------------------------------
+    # Company required skills
+    # -----------------------------------------
+
+    required_skills = [
+        skill.strip()
+        for skill in company.skills.split(",")
+        if skill.strip()
+    ]
+
+    # -----------------------------------------
+    # Resume detected skills
+    # -----------------------------------------
+
+    resume_skills = get_resume_skills(
+        student.id,
+        db
+    )
+
+    # -----------------------------------------
+    # Manually completed preparation skills
+    # -----------------------------------------
+
+    completed = (
+        db.query(CompanyPreparation)
+        .filter(
+            CompanyPreparation.student_id == student.id,
+            CompanyPreparation.company_id == company.id,
+            CompanyPreparation.completed == 1
+        )
+        .all()
+    )
+
+    preparation_skills = [
+        item.skill
+        for item in completed
+    ]
+
+    # -----------------------------------------
+    # Combine skills
+    # -----------------------------------------
+
+    student_skills = {
+        normalize_skill(skill)
+        for skill in (
+            resume_skills +
+            preparation_skills
+        )
+    }
+
+    # -----------------------------------------
+    # Match skills
+    # -----------------------------------------
+
+    matched_skills = []
+    missing_skills = []
+
+    for required_skill in required_skills:
+
+        normalized_required = normalize_skill(
+            required_skill
+        )
+
+        if normalized_required in student_skills:
+            matched_skills.append(required_skill)
+        else:
+            missing_skills.append(required_skill)
+
+    # -----------------------------------------
+    # Skill match percentage
+    # -----------------------------------------
+
+    skill_match_score = (
+        round(
+            len(matched_skills)
+            / len(required_skills)
+            * 100
+        )
+        if required_skills
+        else 0
+    )
+
+    # -----------------------------------------
+    # Resume score
+    # -----------------------------------------
+
+    latest_resume = (
+        db.query(ResumeAnalysis)
+        .filter(
+            ResumeAnalysis.student_id == student.id
+        )
+        .order_by(ResumeAnalysis.id.desc())
+        .first()
+    )
+
+    resume_score = (
+        latest_resume.resume_score
+        if latest_resume
+        else 0
+    )
+
+    # -----------------------------------------
+    # Other preparation scores
+    # -----------------------------------------
+
+    scores = calculate_student_scores(
+        student.id,
+        db
+    )
+
+    coding_score = scores["coding_score"]
+    aptitude_score = scores["aptitude_score"]
+    project_score = scores["project_score"]
+    interview_score = scores["interview_score"]
+
+    # -----------------------------------------
+    # Eligibility
+    # -----------------------------------------
+
+    eligible = check_company_eligibility(
+        company,
+        student
+    )
+
+    # -----------------------------------------
+    # CGPA component
+    # -----------------------------------------
+
+    cgpa_score = 100 if eligible else 0
+
+    # -----------------------------------------
+    # Overall company match
+    # -----------------------------------------
+
+    match_score = round(
+        skill_match_score * 0.50
+        + resume_score * 0.15
+        + cgpa_score * 0.10
+        + coding_score * 0.10
+        + aptitude_score * 0.05
+        + project_score * 0.05
+        + interview_score * 0.05
+    )
+
+    # -----------------------------------------
+    # Recommendations
+    # -----------------------------------------
+
+    recommendations = []
+
+    if missing_skills:
+        for skill in missing_skills[:3]:
+            recommendations.append(
+                f"Strengthen your {skill} skills "
+                f"to improve this company match."
+            )
+
+    if coding_score < 60:
+        recommendations.append(
+            "Improve your coding and DSA preparation."
+        )
+
+    if aptitude_score < 60:
+        recommendations.append(
+            "Practice aptitude and logical reasoning."
+        )
+
+    if project_score < 60:
+        recommendations.append(
+            "Add or improve practical projects."
+        )
+
+    if interview_score < 60:
+        recommendations.append(
+            "Practice technical and HR interviews."
+        )
+
+    if not recommendations:
+        recommendations.append(
+            "Your profile covers the main requirements. "
+            "Continue practicing company-specific questions."
+        )
+
+    return {
+        "company": company.name,
+        "role": company.role,
+        "package": company.package,
+
+        "eligible": eligible,
+
+        "match_score": match_score,
+
+        "skill_match_score": skill_match_score,
+
+        "resume_score": resume_score,
+        "coding_score": coding_score,
+        "aptitude_score": aptitude_score,
+        "project_score": project_score,
+        "interview_score": interview_score,
+
+        "matched_skills": matched_skills,
+        "missing_skills": missing_skills,
+
+        "recommendations": recommendations
+    }
+
+
+@app.get("/companies/{company_id}/match")
+def get_company_match(
+    company_id: int,
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    company = db.query(Company).filter(
+        Company.id == company_id
+    ).first()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not company or not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Company or student not found"
+        )
+
+    result = calculate_company_match(company, student, db)
+
+    db.close()
+
+    return result
+
+
+# --------------------------------------------------------------------
 # Step 11 — Projects Module (real project tracking)
 # --------------------------------------------------------------------
 
@@ -2527,19 +3465,7 @@ def delete_project(
 # Step 12 — Progress Dashboard
 # --------------------------------------------------------------------
 
-@app.get("/progress/{student_id}")
-def get_progress(
-    student_id: int,
-    current_student_id: int = Depends(get_current_student)
-):
-    if student_id != current_student_id:
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied"
-        )
-
-    db = SessionLocal()
-
+def calculate_student_scores(student_id, db):
     # Coding
     total_coding = db.query(CodingQuestion).count()
     correct_coding = db.query(CodingAttempt).filter(
@@ -2582,6 +3508,51 @@ def get_progress(
     project_score = min(round((completed_projects / 5) * 100), 100)
 
     # Interview
+    interview_attempts = db.query(InterviewAttempt).filter(
+        InterviewAttempt.student_id == student_id
+    ).all()
+
+    interview_score = (
+        round(
+            sum(attempt.score for attempt in interview_attempts)
+            / len(interview_attempts)
+        )
+        if interview_attempts else 0
+    )
+
+    return {
+        "resume_score": resume_score,
+        "coding_score": coding_score,
+        "aptitude_score": aptitude_score,
+        "project_score": project_score,
+        "interview_score": interview_score,
+        "completed_projects": completed_projects
+    }
+
+
+@app.get("/progress/{student_id}")
+def get_progress(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    scores = calculate_student_scores(student_id, db)
+
+    resume_score = scores["resume_score"]
+    coding_score = scores["coding_score"]
+    aptitude_score = scores["aptitude_score"]
+    project_score = scores["project_score"]
+    interview_score = scores["interview_score"]
+    completed_projects = scores["completed_projects"]
+
+    # Interview attempt counts (for display, not scoring)
     interview_total = db.query(InterviewQuestion).count()
 
     interview_attempted = db.query(InterviewAttempt).filter(
@@ -2591,10 +3562,11 @@ def get_progress(
     db.close()
 
     readiness_score = round(
-        resume_score * 0.25 +
-        coding_score * 0.30 +
-        aptitude_score * 0.20 +
-        project_score * 0.25
+        resume_score * 0.20 +
+        coding_score * 0.25 +
+        aptitude_score * 0.15 +
+        project_score * 0.20 +
+        interview_score * 0.20
     )
 
     return {
@@ -2602,8 +3574,565 @@ def get_progress(
         "coding_score": coding_score,
         "aptitude_score": aptitude_score,
         "project_score": project_score,
+        "interview_score": interview_score,
         "interview_attempted": interview_attempted,
         "interview_total": interview_total,
         "completed_projects": completed_projects,
         "readiness_score": readiness_score
+    }
+
+# --------------------------------------------------------------------
+# Step 36 — Skill Gap Analyzer
+# --------------------------------------------------------------------
+
+TARGET_ROLE_SKILLS = {
+    "software developer": [
+        "Python",
+        "Java",
+        "JavaScript",
+        "DSA",
+        "SQL",
+        "DBMS",
+        "Git"
+    ],
+    "frontend developer": [
+        "HTML",
+        "CSS",
+        "JavaScript",
+        "React",
+        "Git"
+    ],
+    "backend developer": [
+        "Python",
+        "Java",
+        "FastAPI",
+        "SQL",
+        "PostgreSQL",
+        "REST API",
+        "Git"
+    ],
+    "data analyst": [
+        "Python",
+        "SQL",
+        "Excel",
+        "Power BI",
+        "Statistics"
+    ],
+    "data scientist": [
+        "Python",
+        "SQL",
+        "Machine Learning",
+        "Statistics",
+        "Pandas",
+        "NumPy"
+    ]
+}
+
+HIGH_PRIORITY_SKILLS = [
+    "dsa",
+    "system design",
+    "problem solving",
+    "machine learning"
+]
+
+MEDIUM_PRIORITY_SKILLS = [
+    "sql",
+    "dbms",
+    "react",
+    "java",
+    "python",
+    "javascript"
+]
+
+
+def analyze_skill_gap(student, db):
+    """Compare the skills a student's target role implies against the
+    skills companies hiring for that role actually ask for."""
+
+    target_role = (student.target_role or "").lower()
+
+    student_skills = TARGET_ROLE_SKILLS.get(
+        target_role,
+        TARGET_ROLE_SKILLS["software developer"]
+    )
+
+    required_skills = set()
+
+    companies = db.query(Company).all()
+
+    for company in companies:
+        company_role = company.role.lower()
+
+        if (
+            target_role in company_role
+            or company_role in target_role
+            or target_role == "software developer"
+        ):
+            for skill in company.skills.split(","):
+                skill = skill.strip()
+
+                if skill:
+                    required_skills.add(skill)
+
+    matched_skills = []
+    skill_gaps = []
+
+    for skill in sorted(required_skills):
+        matched = any(
+            skill.lower() == student_skill.lower()
+            for student_skill in student_skills
+        )
+
+        if matched:
+            matched_skills.append(skill)
+            continue
+
+        if skill.lower() in HIGH_PRIORITY_SKILLS:
+            priority = "High"
+        elif skill.lower() in MEDIUM_PRIORITY_SKILLS:
+            priority = "Medium"
+        else:
+            priority = "Low"
+
+        skill_gaps.append({
+            "skill": skill,
+            "priority": priority
+        })
+
+    priority_order = {"High": 0, "Medium": 1, "Low": 2}
+
+    skill_gaps.sort(
+        key=lambda gap: priority_order.get(gap["priority"], 3)
+    )
+
+    return {
+        "target_role": student.target_role,
+        "total_required": len(required_skills),
+        "total_matched": len(matched_skills),
+        "total_missing": len(skill_gaps),
+        "matched_skills": matched_skills,
+        "skill_gaps": skill_gaps
+    }
+
+
+@app.get("/students/{student_id}/skill-gap")
+def get_skill_gap(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    result = analyze_skill_gap(student, db)
+
+    db.close()
+
+    return result
+
+
+# --------------------------------------------------------------------
+# Step 35 — Daily Placement Plan
+# --------------------------------------------------------------------
+
+def generate_daily_plan(
+    resume_score,
+    coding_score,
+    aptitude_score,
+    project_score,
+    interview_score,
+    skill_gaps=None
+):
+    if skill_gaps is None:
+        skill_gaps = []
+
+    areas = [
+        ("Resume", resume_score),
+        ("Coding & DSA", coding_score),
+        ("Aptitude", aptitude_score),
+        ("Projects", project_score),
+        ("Interview", interview_score)
+    ]
+
+    areas.sort(key=lambda item: item[1])
+
+    plan = []
+
+    # Add important skill gaps first
+    for gap in skill_gaps:
+        skill = gap["skill"]
+        priority = gap["priority"]
+
+        if priority == "High":
+            duration = 45
+        elif priority == "Medium":
+            duration = 30
+        else:
+            duration = 20
+
+        plan.append({
+            "area": skill,
+            "score": 0,
+            "priority": priority,
+            "task": (
+                f"Spend {duration} minutes "
+                f"learning and practicing {skill}."
+            )
+        })
+
+    # Add weakest performance areas
+    for area, score in areas:
+        if score < 40:
+            priority = "High"
+            duration = 45
+        elif score < 60:
+            priority = "Medium"
+            duration = 30
+        elif score < 80:
+            priority = "Low"
+            duration = 20
+        else:
+            priority = "Maintain"
+            duration = 15
+
+        plan.append({
+            "area": area,
+            "score": score,
+            "priority": priority,
+            "task": (
+                f"Spend {duration} minutes "
+                f"practicing {area}."
+            )
+        })
+
+    # Remove duplicate areas
+    unique_plan = []
+    seen = set()
+
+    for item in plan:
+        if item["area"] not in seen:
+            unique_plan.append(item)
+            seen.add(item["area"])
+
+    return unique_plan[:5]
+
+
+@app.get("/students/{student_id}/daily-plan")
+def get_daily_plan(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores = calculate_student_scores(student_id, db)
+
+    gap_analysis = analyze_skill_gap(student, db)
+
+    db.close()
+
+    plan = generate_daily_plan(
+        scores["resume_score"],
+        scores["coding_score"],
+        scores["aptitude_score"],
+        scores["project_score"],
+        scores["interview_score"],
+        gap_analysis["skill_gaps"]
+    )
+
+    return {
+        "student": student.name,
+        "plan": plan
+    }
+
+
+# --------------------------------------------------------------------
+# Step 37 — Advanced AI Placement Recommendations
+# --------------------------------------------------------------------
+
+def generate_advanced_recommendations(
+    student,
+    resume_score,
+    coding_score,
+    aptitude_score,
+    project_score,
+    interview_score,
+    skill_gaps
+):
+    recommendations = []
+
+    scores = {
+        "Resume": resume_score,
+        "Coding & DSA": coding_score,
+        "Aptitude": aptitude_score,
+        "Projects": project_score,
+        "Interview": interview_score
+    }
+
+    # Find weakest area
+    weakest_area = min(
+        scores,
+        key=scores.get
+    )
+
+    weakest_score = scores[weakest_area]
+
+    if weakest_score < 40:
+        recommendations.append({
+            "priority": "High",
+            "area": weakest_area,
+            "message": (
+                f"{weakest_area} is currently your weakest area "
+                f"at {weakest_score}%. Give it your highest priority."
+            )
+        })
+
+    elif weakest_score < 60:
+        recommendations.append({
+            "priority": "Medium",
+            "area": weakest_area,
+            "message": (
+                f"Improve your {weakest_area} score from "
+                f"{weakest_score}% to at least 60%."
+            )
+        })
+
+    # Skill gap recommendations
+    high_priority_skills = [
+        gap["skill"]
+        for gap in skill_gaps
+        if gap["priority"] == "High"
+    ]
+
+    if high_priority_skills:
+        recommendations.append({
+            "priority": "High",
+            "area": "Skill Gap",
+            "message": (
+                "Focus on these high-priority skills: "
+                + ", ".join(high_priority_skills)
+            )
+        })
+
+    # Coding
+    if coding_score < 60:
+        recommendations.append({
+            "priority": "High",
+            "area": "Coding",
+            "message": (
+                "Practice DSA and coding problems regularly. "
+                "Focus on arrays, strings, searching and sorting first."
+            )
+        })
+
+    # Aptitude
+    if aptitude_score < 60:
+        recommendations.append({
+            "priority": "Medium",
+            "area": "Aptitude",
+            "message": (
+                "Practice quantitative aptitude and logical reasoning "
+                "to improve your placement test performance."
+            )
+        })
+
+    # Resume
+    if resume_score < 60:
+        recommendations.append({
+            "priority": "High",
+            "area": "Resume",
+            "message": (
+                "Improve your resume by adding relevant technical "
+                "skills, projects and measurable achievements."
+            )
+        })
+
+    # Projects
+    if project_score < 60:
+        recommendations.append({
+            "priority": "Medium",
+            "area": "Projects",
+            "message": (
+                "Build more practical projects related to your "
+                f"target role: {student.target_role}."
+            )
+        })
+
+    # Interview
+    if interview_score < 60:
+        recommendations.append({
+            "priority": "Medium",
+            "area": "Interview",
+            "message": (
+                "Practice technical and HR interview questions. "
+                "Use your projects as examples when answering."
+            )
+        })
+
+    # Strong performance
+    if all(score >= 80 for score in scores.values()):
+        recommendations.append({
+            "priority": "Maintain",
+            "area": "Overall",
+            "message": (
+                "Your placement profile is strong. "
+                "Focus on company-specific preparation and advanced questions."
+            )
+        })
+
+    return recommendations
+
+
+@app.get("/students/{student_id}/recommendations")
+def get_advanced_recommendations(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores = calculate_student_scores(student_id, db)
+
+    gap_analysis = analyze_skill_gap(student, db)
+
+    recommendations = generate_advanced_recommendations(
+        student,
+        scores["resume_score"],
+        scores["coding_score"],
+        scores["aptitude_score"],
+        scores["project_score"],
+        scores["interview_score"],
+        gap_analysis["skill_gaps"]
+    )
+
+    db.close()
+
+    return {
+        "target_role": student.target_role,
+        "scores": {
+            "resume": scores["resume_score"],
+            "coding": scores["coding_score"],
+            "aptitude": scores["aptitude_score"],
+            "projects": scores["project_score"],
+            "interview": scores["interview_score"]
+        },
+        "recommendations": recommendations
+    }
+
+
+# --------------------------------------------------------------------
+# Step 38 — Placement Analytics
+# --------------------------------------------------------------------
+
+@app.get("/students/{student_id}/analytics")
+def get_student_analytics(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores = calculate_student_scores(student_id, db)
+
+    db.close()
+
+    score_map = {
+        "Resume": scores["resume_score"],
+        "Coding": scores["coding_score"],
+        "Aptitude": scores["aptitude_score"],
+        "Projects": scores["project_score"],
+        "Interview": scores["interview_score"]
+    }
+
+    readiness_score = round(
+        score_map["Resume"] * 0.20 +
+        score_map["Coding"] * 0.25 +
+        score_map["Aptitude"] * 0.15 +
+        score_map["Projects"] * 0.20 +
+        score_map["Interview"] * 0.20
+    )
+
+    average_score = round(
+        sum(score_map.values()) / len(score_map)
+    )
+
+    strongest_area = max(score_map, key=score_map.get)
+    weakest_area = min(score_map, key=score_map.get)
+
+    return {
+        "target_role": student.target_role,
+        "readiness_score": readiness_score,
+        "average_score": average_score,
+        "scores": score_map,
+        "strongest_area": {
+            "area": strongest_area,
+            "score": score_map[strongest_area]
+        },
+        "weakest_area": {
+            "area": weakest_area,
+            "score": score_map[weakest_area]
+        }
     }

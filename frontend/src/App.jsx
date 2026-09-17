@@ -1,4 +1,13 @@
 import { useState, useEffect } from "react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer
+} from "recharts";
 
 // Backend URL comes from the frontend's .env (VITE_API_URL) so it's not
 // hard-coded — set VITE_API_URL=http://127.0.0.1:8000 locally, and to your
@@ -30,8 +39,19 @@ const apiFetch = async (url, options = {}) => {
   });
 };
 
+
+const futuristicStyles = `
+  .placementpro-input::placeholder { color: rgb(100 116 139); }
+  .placementpro-input:focus {
+    outline: none;
+    border-color: rgb(34 211 238 / 0.45);
+    box-shadow: 0 0 0 3px rgb(34 211 238 / 0.08), 0 0 24px rgb(34 211 238 / 0.08);
+  }
+`;
+
 function App() {
   const [active, setActive] = useState("Dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [student, setStudent] = useState(null);
   const [token, setToken] = useState(
     () => localStorage.getItem("placementpro_token") || null
@@ -44,6 +64,28 @@ function App() {
   const [codingScore, setCodingScore] = useState(0);
   const [aptitudeScore, setAptitudeScore] = useState(0);
   const [projectScore, setProjectScore] = useState(0);
+  const [interviewScore, setInterviewScore] = useState(0);
+  const [readinessScore, setReadinessScore] = useState(0);
+  const [companyPreparation, setCompanyPreparation] = useState(null);
+  const [companyPreparationLoading, setCompanyPreparationLoading] = useState(false);
+  const [progressLoading, setProgressLoading] = useState(true);
+  const [dailyPlan, setDailyPlan] = useState([]);
+  const [dailyPlanLoading, setDailyPlanLoading] = useState(false);
+  const [analytics, setAnalytics] = useState(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  const skillScores = {
+    Resume: resumeScore,
+    Coding: codingScore,
+    Aptitude: aptitudeScore,
+    Projects: projectScore,
+    Interview: interviewScore
+  };
+
+  const weakestSkill = Object.entries(skillScores).reduce(
+    (lowest, current) =>
+      current[1] < lowest[1] ? current : lowest
+  );
 
   // On mount: if a token is already stored, restore the session by
   // asking the backend who it belongs to. This is what makes
@@ -206,23 +248,251 @@ function App() {
     loadProjectScore();
   }, [student]);
 
+  useEffect(() => {
+    const loadDashboardProgress = async () => {
+      if (!student?.id) return;
+
+      try {
+        setProgressLoading(true);
+
+        const response = await apiFetch(
+          `${API_BASE}/progress/${student.id}`
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail || "Failed to load dashboard progress"
+          );
+        }
+
+        setResumeScore(data.resume_score || 0);
+        setCodingScore(data.coding_score || 0);
+        setAptitudeScore(data.aptitude_score || 0);
+        setProjectScore(data.project_score || 0);
+        setInterviewScore(data.interview_score || 0);
+        setReadinessScore(data.readiness_score || 0);
+
+      } catch (error) {
+        console.error(
+          "Could not load dashboard progress:",
+          error
+        );
+      } finally {
+        setProgressLoading(false);
+      }
+    };
+
+    loadDashboardProgress();
+  }, [student]);
+
+  useEffect(() => {
+    const loadCompanyPreparation = async () => {
+      if (!student?.id) return;
+
+      try {
+        setCompanyPreparationLoading(true);
+
+        const companiesResponse = await apiFetch(
+          `${API_BASE}/companies`
+        );
+
+        const companies = await companiesResponse.json();
+
+        if (!companiesResponse.ok || !companies.length) {
+          return;
+        }
+
+        // Use the first company as the default company
+        const company = companies[0];
+
+        const preparationResponse = await apiFetch(
+          `${API_BASE}/companies/${company.id}/preparation`
+        );
+
+        const preparation = await preparationResponse.json();
+
+        if (!preparationResponse.ok) {
+          return;
+        }
+
+        const progressResponse = await apiFetch(
+          `${API_BASE}/companies/${company.id}/preparation/progress?student_id=${student.id}`
+        );
+
+        const progress = await progressResponse.json();
+
+        if (!progressResponse.ok) {
+          return;
+        }
+
+        const totalSkills = preparation.checklist?.length || 0;
+        const completedSkills =
+          progress.completed_skills?.length || 0;
+
+        const percentage =
+          totalSkills > 0
+            ? Math.round((completedSkills / totalSkills) * 100)
+            : 0;
+
+        setCompanyPreparation({
+          company: preparation.company,
+          role: preparation.role,
+          completedSkills,
+          totalSkills,
+          percentage
+        });
+
+      } catch (error) {
+        console.error(
+          "Could not load company preparation:",
+          error
+        );
+      } finally {
+        setCompanyPreparationLoading(false);
+      }
+    };
+
+    loadCompanyPreparation();
+  }, [student]);
+
+  const loadDailyPlan = async () => {
+    if (!student?.id) return;
+
+    setDailyPlanLoading(true);
+
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/students/${student.id}/daily-plan`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Failed to load daily plan"
+        );
+      }
+
+      setDailyPlan(data.plan || []);
+    } catch (error) {
+      console.error("Daily plan error:", error);
+    } finally {
+      setDailyPlanLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (student?.id) {
+      loadDailyPlan();
+    }
+  }, [student?.id]);
+
+  const goToPlanArea = (area) => {
+    const navigationMap = {
+      "Resume": "Resume",
+      "Coding & DSA": "Coding",
+      "Aptitude": "Aptitude",
+      "Projects": "Projects",
+      "Interview": "Interview",
+    };
+
+    const page = navigationMap[area];
+
+    if (page) {
+      setActive(page);
+    }
+  };
+
+  const loadAnalytics = async () => {
+    if (!student?.id) return;
+
+    setAnalyticsLoading(true);
+
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/students/${student.id}/analytics`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Failed to load analytics"
+        );
+      }
+
+      setAnalytics(data);
+    } catch (error) {
+      console.error("Analytics error:", error);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (student?.id) {
+      loadAnalytics();
+    }
+  }, [student?.id]);
+
+  const analyticsChartData = analytics
+    ? Object.entries(analytics.scores).map(
+        ([area, score]) => ({
+          area,
+          score
+        })
+      )
+    : [];
+
+  const analyticsInsights = analytics
+    ? [
+        {
+          title: "🎯 Readiness",
+          message:
+            analytics.readiness_score >= 80
+              ? "Your overall placement readiness is strong. Continue practicing consistently."
+              : analytics.readiness_score >= 60
+              ? "Your placement preparation is progressing well. Focus on your weaker areas."
+              : "Your placement readiness needs improvement. Build a consistent preparation routine."
+        },
+        {
+          title: "💪 Strongest Area",
+          message: `Your strongest preparation area is ${analytics.strongest_area.area} with a score of ${analytics.strongest_area.score}%.`
+        },
+        {
+          title: "📌 Focus Area",
+          message: `Your current focus area should be ${analytics.weakest_area.area}. Its score is ${analytics.weakest_area.score}%.`
+        },
+        {
+          title: "📈 Improvement Strategy",
+          message:
+            analytics.weakest_area.score < 60
+              ? `Spend additional practice time on ${analytics.weakest_area.area} and gradually improve the score above 60%.`
+              : `Maintain your current performance while working toward a score above 80% in ${analytics.weakest_area.area}.`
+        }
+      ]
+    : [];
+
   const menu = [
-    "Dashboard",
-    "Profile",
-    "Resume",
-    "Coding",
-    "Aptitude",
-    "Interview",
-    "Companies",
-    "Projects",
-    "Progress",
+    { name: "Dashboard", icon: "📊" },
+    { name: "Profile", icon: "👤" },
+    { name: "Resume", icon: "📄" },
+    { name: "Coding", icon: "💻" },
+    { name: "Aptitude", icon: "🧠" },
+    { name: "Interview", icon: "🎤" },
+    { name: "Companies", icon: "🏢" },
+    { name: "Projects", icon: "🚀" },
+    { name: "Progress", icon: "📈" },
+    { name: "Analytics", icon: "📊" },
   ];
 
   // Checking localStorage for a session token before deciding what to render.
   if (!authChecked) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <p className="text-slate-500">Loading PlacementPro...</p>
+      <div className="min-h-screen bg-[#05070d] flex items-center justify-center">
+        <p className="text-slate-400">Loading PlacementPro...</p>
       </div>
     );
   }
@@ -233,93 +503,146 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 flex">
+    <div className="min-h-screen bg-[#05070d] text-white flex overflow-hidden">
+      <style>{futuristicStyles}</style>
+      {/* Ambient futuristic background */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute -top-40 -right-40 w-[520px] h-[520px] rounded-full bg-cyan-500/10 blur-3xl" />
+        <div className="absolute top-[35%] -left-52 w-[500px] h-[500px] rounded-full bg-purple-600/10 blur-3xl" />
+        <div
+          className="absolute inset-0 opacity-20"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(34,211,238,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.08) 1px, transparent 1px)",
+            backgroundSize: "48px 48px",
+          }}
+        />
+      </div>
 
       {/* Sidebar */}
-      {/* FIX: removed "hidden md:block" — that class was hiding the entire
-          sidebar (including the Profile button) on any viewport narrower
-          than Tailwind's md breakpoint (768px). That was the actual cause
-          of "Profile" being unclickable/invisible. Sidebar is now always
-          visible. Kept "relative" so the Settings button still anchors here. */}
-      <aside className="w-64 bg-slate-900 text-white min-h-screen p-5 relative">
-
+      <aside
+        className={`fixed md:relative inset-y-0 left-0 z-50 w-72
+        bg-[#080b13]/95 backdrop-blur-xl border-r border-white/10
+        flex flex-col p-5 transform transition-transform duration-300
+        ${sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}`}
+      >
         <div className="mb-8">
-          <h1 className="text-2xl font-bold">
-            Placement<span className="text-blue-400">Pro</span>
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            AI Placement Coach
-          </p>
+          <div className="flex items-center gap-3">
+            <div className="relative w-11 h-11 rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-600 flex items-center justify-center shadow-[0_0_30px_rgba(34,211,238,0.28)]">
+              <span className="text-white text-xl font-black">P</span>
+            </div>
+            <div>
+              <h1 className="text-xl font-black tracking-tight">
+                Placement<span className="text-cyan-400">Pro</span>
+              </h1>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">
+                AI Placement Coach
+              </p>
+            </div>
+          </div>
         </div>
 
-        <nav className="space-y-2">
+        <nav className="space-y-1.5 flex-1 overflow-y-auto pr-1">
           {menu.map((item) => (
             <button
-              key={item}
+              key={item.name}
               onClick={() => {
-                setActive(item);
-                if (item === "Profile") {
-                  setShowProfile(true);
-                } else {
-                  setShowProfile(false);
-                }
+                setActive(item.name);
+                if (item.name === "Profile") setShowProfile(true);
+                else setShowProfile(false);
+                setSidebarOpen(false);
               }}
-              className={`w-full text-left px-4 py-3 rounded-lg transition ${
-                active === item
-                  ? "bg-blue-600 text-white"
-                  : "text-slate-300 hover:bg-slate-800"
+              className={`group w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all ${
+                active === item.name
+                  ? "bg-gradient-to-r from-cyan-500/20 to-purple-500/10 text-cyan-300 border border-cyan-400/20 shadow-[0_0_22px_rgba(34,211,238,0.08)]"
+                  : "text-slate-400 hover:text-white hover:bg-[#0b1018]/5 border border-transparent"
               }`}
             >
-              {item}
+              <span
+                className={`w-8 h-8 rounded-lg flex items-center justify-center text-base ${
+                  active === item.name
+                    ? "bg-cyan-400/10"
+                    : "bg-[#0b1018]/[0.03] group-hover:bg-[#0b1018]/10"
+                }`}
+              >
+                {item.icon}
+              </span>
+              <span>{item.name}</span>
+              {active === item.name && (
+                <span className="ml-auto w-1.5 h-1.5 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,0.9)]" />
+              )}
             </button>
           ))}
         </nav>
 
-        <div className="absolute bottom-6 left-5 right-5 space-y-1">
-          <button className="text-slate-400 hover:text-white transition">
-            ⚙ Settings
-          </button>
+        <div className="mt-5 pt-5 border-t border-white/10">
+          <div className="rounded-2xl bg-[#0b1018]/[0.03] border border-white/10 p-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-cyan-400 flex items-center justify-center font-black">
+                {student?.name?.charAt(0)?.toUpperCase() || "U"}
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-bold truncate">{student?.name || "Student"}</p>
+                <p className="text-xs text-slate-400 truncate">
+                  {student?.target_role || "Software Developer"}
+                </p>
+              </div>
+            </div>
 
-          <button
-            onClick={handleLogout}
-            className="block text-slate-400 hover:text-white transition"
-          >
-            ⏻ Logout
-          </button>
+            <button
+              onClick={handleLogout}
+              className="mt-4 w-full text-left text-xs font-semibold text-slate-400 hover:text-white transition"
+            >
+              ⏻ Sign out
+            </button>
+          </div>
         </div>
       </aside>
 
-      {/* Main Area */}
-      <main className="flex-1 min-w-0">
+      {sidebarOpen && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm md:hidden"
+        />
+      )}
 
-        {/* Navbar */}
-        <header className="bg-white border-b px-6 py-4 flex justify-between items-center">
-          <div>
-            <p className="text-sm text-slate-500">Welcome back 👋</p>
-            <h2 className="text-xl font-bold">Good Morning!</h2>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="text-right hidden sm:block">
-              <p className="font-semibold">
-                {loading ? "Loading..." : student?.name || "API NOT CONNECTED"}
-              </p>
-              <p className="text-xs text-slate-500">
-                {student?.target_role || "Software Developer"}
-              </p>
+      {/* Main area */}
+      <main className="relative z-10 flex-1 min-w-0 overflow-y-auto">
+        <header className="sticky top-0 z-30 bg-[#05070d]/80 backdrop-blur-xl border-b border-white/10 px-4 sm:px-6 lg:px-8 py-4">
+          <div className="flex items-center justify-between max-w-[1500px] mx-auto">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setSidebarOpen(!sidebarOpen)}
+                className="md:hidden w-10 h-10 rounded-xl bg-[#0b1018]/5 border border-white/10 flex items-center justify-center text-slate-300"
+              >
+                ☰
+              </button>
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-cyan-400/80">
+                  AI Placement Platform
+                </p>
+                <h2 className="text-base sm:text-lg font-bold text-white">
+                  {active === "Dashboard" ? "Your placement command center" : active}
+                </h2>
+              </div>
             </div>
 
-            <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold">
-              {student?.name?.charAt(0).toUpperCase() || "S"}
+            <div className="flex items-center gap-3">
+              <div className="hidden sm:block text-right">
+                <p className="text-sm font-semibold">{student?.name || "Student"}</p>
+                <p className="text-[11px] text-slate-400">
+                  {student?.target_role || "Software Developer"}
+                </p>
+              </div>
+              <div className="w-10 h-10 rounded-full border border-cyan-400/30 bg-gradient-to-br from-cyan-400/20 to-purple-500/20 flex items-center justify-center font-bold text-cyan-300">
+                {student?.name?.charAt(0)?.toUpperCase() || "S"}
+              </div>
             </div>
           </div>
         </header>
 
         {active === "Profile" ? (
-          <ProfilePage
-            student={student}
-            setStudent={setStudent}
-          />
+          <ProfilePage student={student} setStudent={setStudent} />
         ) : active === "Resume" ? (
           <ResumePage student={student} />
         ) : active === "Coding" ? (
@@ -329,192 +652,379 @@ function App() {
         ) : active === "Interview" ? (
           <InterviewPage student={student} />
         ) : active === "Companies" ? (
-          <CompaniesPage />
+          <CompaniesPage student={student} />
         ) : active === "Projects" ? (
           <ProjectsPage student={student} />
         ) : active === "Progress" ? (
           <ProgressPage student={student} />
+        ) : active === "Analytics" ? (
+          <section className="p-4 sm:p-6">
+            <div className="max-w-6xl mx-auto space-y-6">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-cyan-400 font-semibold">
+                  Performance Intelligence
+                </p>
+                <h1 className="text-3xl sm:text-4xl font-black tracking-tight mt-2">
+                  Placement Analytics
+                </h1>
+                <p className="mt-2 text-sm text-slate-400">
+                  Track preparation performance and identify your next focus area.
+                </p>
+              </div>
+
+              {analyticsLoading ? (
+                <div className="rounded-3xl bg-[#0b1018]/[0.03] border border-white/10 p-12 text-center text-slate-400">
+                  Loading analytics...
+                </div>
+              ) : analytics ? (
+                <>
+                  <div className="relative overflow-hidden rounded-3xl border border-cyan-400/20 bg-gradient-to-br from-cyan-500/10 via-white/[0.03] to-purple-500/10 p-6 sm:p-8">
+                    <div className="absolute -right-20 -top-20 w-56 h-56 rounded-full border border-cyan-400/10" />
+                    <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full border border-purple-400/10" />
+                    <div className="relative flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6">
+                      <div>
+                        <p className="text-sm text-slate-400">Placement Readiness</p>
+                        <div className="mt-2 flex items-end gap-2">
+                          <span className="text-6xl font-black bg-gradient-to-r from-cyan-300 to-purple-400 bg-clip-text text-transparent">
+                            {analytics.readiness_score}%
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-400">
+                          Average score: <span className="text-white font-semibold">{analytics.average_score}%</span>
+                        </p>
+                      </div>
+                      <div className="w-full sm:w-64">
+                        <div className="flex justify-between text-xs text-slate-400 mb-2">
+                          <span>Readiness</span>
+                          <span>{analytics.readiness_score}/100</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-[#0b1018]/10 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-purple-500"
+                            style={{ width: `${analytics.readiness_score}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                    {Object.entries(analytics.scores).map(([area, score]) => (
+                      <div
+                        key={area}
+                        className="rounded-2xl border border-white/10 bg-[#0b1018]/[0.03] p-5 hover:bg-[#0b1018]/[0.05] transition"
+                      >
+                        <p className="text-xs uppercase tracking-wider text-slate-400">{area}</p>
+                        <p className="mt-3 text-3xl font-black">{score}%</p>
+                        <div className="mt-4 h-1.5 rounded-full bg-[#0b1018]/10">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-purple-500"
+                            style={{ width: `${score}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="rounded-3xl border border-white/10 bg-[#0b1018]/[0.03] p-5 sm:p-6">
+                    <h2 className="text-xl font-bold">Performance Overview</h2>
+                    <p className="mt-1 text-sm text-slate-400">Compare your preparation areas.</p>
+                    <div className="h-80 w-full mt-5">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={analyticsChartData} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                          <XAxis dataKey="area" tick={{ fill: "#94a3b8", fontSize: 12 }} />
+                          <YAxis domain={[0, 100]} tickFormatter={(value) => `${value}%`} tick={{ fill: "#64748b", fontSize: 11 }} />
+                          <Tooltip
+                            contentStyle={{
+                              background: "#0b1020",
+                              border: "1px solid rgba(34,211,238,0.2)",
+                              borderRadius: "12px",
+                              color: "#fff",
+                            }}
+                            formatter={(value) => [`${value}%`, "Score"]}
+                          />
+                          <Bar dataKey="score" fill="#22d3ee" radius={[8, 8, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {analyticsInsights.map((insight, index) => (
+                      <div
+                        key={index}
+                        className="rounded-2xl border border-white/10 bg-[#0b1018]/[0.03] p-5"
+                      >
+                        <h3 className="font-bold text-white">{insight.title}</h3>
+                        <p className="mt-2 text-sm leading-6 text-slate-400">{insight.message}</p>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-3xl border border-white/10 bg-[#0b1018]/[0.03] p-10 text-center text-slate-400">
+                  Analytics data is not available.
+                </div>
+              )}
+            </div>
+          </section>
         ) : (
           /* Dashboard */
-          <section className="p-4 sm:p-6">
-
-            {loading ? (
-              <div className="text-slate-500">
-                Loading dashboard...
-              </div>
-            ) : (
-              <>
-
-            {/* Visible connection status instead of a raw debug dump */}
-            {apiError && (
-              <div className="bg-red-50 border border-red-200 text-red-700 p-4 m-4 rounded-lg text-sm">
-                Couldn't load student data: {apiError}
-              </div>
-            )}
-
-            {student && (
-              <div className="bg-white rounded-2xl p-6 mb-6 border shadow-sm">
-                <h3 className="text-lg font-bold mb-4">
-                  Student Profile
-                </h3>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-
-                  <div>
-                    <p className="text-sm text-slate-500">Name</p>
-                    <p className="font-semibold">{student.name}</p>
-                  </div>
-
-                  <div>
-                    <p className="text-sm text-slate-500">Degree</p>
-                    <p className="font-semibold">{student.degree}</p>
-                  </div>
-
-                  <div>
-                    <p className="text-sm text-slate-500">Branch</p>
-                    <p className="font-semibold">{student.branch}</p>
-                  </div>
-
-                  <div>
-                    <p className="text-sm text-slate-500">CGPA</p>
-                    <p className="font-semibold">{student.cgpa}</p>
-                  </div>
-
+          <section className="relative p-4 sm:p-6 lg:p-8">
+            <div className="max-w-[1500px] mx-auto">
+              {loading ? (
+                <div className="min-h-[70vh] flex items-center justify-center text-slate-400">
+                  Loading your placement command center...
                 </div>
-              </div>
-            )}
+              ) : (
+                <>
+                  {apiError && (
+                    <div className="mb-6 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-300">
+                      Couldn't load student data: {apiError}
+                    </div>
+                  )}
 
-            {/* Welcome Card */}
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-2xl p-6 mb-6">
-              <h2 className="text-2xl font-bold mb-2">
-                Your Placement Journey 🚀
-              </h2>
+                  {/* Hero */}
+                  <div className="relative min-h-[430px] overflow-hidden rounded-[32px] border border-cyan-400/20 bg-gradient-to-br from-[#07131c] via-[#080b15] to-[#120a1f] p-6 sm:p-10 lg:p-12 shadow-[0_0_60px_rgba(34,211,238,0.06)]">
+                    <div className="absolute inset-0 pointer-events-none">
+                      <div className="absolute -right-24 -top-24 w-[420px] h-[420px] rounded-full border border-cyan-400/20" />
+                      <div className="absolute -right-4 top-10 w-[320px] h-[320px] rounded-full border border-purple-500/30 rotate-12" />
+                      <div className="absolute right-12 top-28 w-[210px] h-[210px] rounded-full border border-cyan-300/20 -rotate-12" />
+                      <div className="absolute right-28 top-40 w-28 h-28 rounded-full bg-gradient-to-br from-cyan-300/20 to-purple-500/10 blur-xl" />
+                      <div className="absolute right-36 top-48 w-16 h-16 rounded-full bg-slate-900 border border-white/10 shadow-[0_0_45px_rgba(34,211,238,0.2)]" />
+                    </div>
 
-              <p className="text-blue-100 mb-5">
-                Keep learning, keep practicing, and get closer to your dream job.
-              </p>
+                    <div className="relative z-10 max-w-2xl">
+                      <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/5 px-4 py-2 text-xs font-semibold text-cyan-300">
+                        <span className="w-2 h-2 rounded-full bg-cyan-300 animate-pulse" />
+                        AI-POWERED PLACEMENT PREPARATION
+                      </div>
 
-              <div className="flex items-center gap-5">
-                <div>
-                  <p className="text-sm text-blue-100">
-                    Placement Readiness
-                  </p>
-                  <p className="text-4xl font-bold">72%</p>
-                </div>
+                      <h1 className="mt-7 text-4xl sm:text-5xl lg:text-7xl font-black leading-[0.95] tracking-[-0.04em]">
+                        Get Placement
+                        <br />
+                        <span className="text-white">Ready with </span>
+                        <span className="bg-gradient-to-r from-cyan-300 via-blue-400 to-purple-500 bg-clip-text text-transparent">
+                          AI
+                        </span>
+                      </h1>
 
-                <div className="flex-1 max-w-md">
-                  <div className="h-3 bg-blue-400/40 rounded-full">
-                    <div className="h-3 bg-white rounded-full w-[72%]"></div>
+                      <p className="mt-6 max-w-xl text-sm sm:text-base leading-7 text-slate-400">
+                        Your personalized command center for resume analysis, coding,
+                        aptitude, projects, interviews, and company preparation.
+                      </p>
+
+                      <div className="mt-7 flex flex-wrap gap-3">
+                        <button
+                          onClick={() => setActive(weakestSkill[0])}
+                          className="px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 font-black text-sm shadow-[0_0_30px_rgba(34,211,238,0.2)] hover:scale-[1.02] transition"
+                        >
+                          Continue Preparation →
+                        </button>
+                        <button
+                          onClick={() => setActive("Analytics")}
+                          className="px-6 py-3 rounded-xl border border-white/15 bg-[#0b1018]/5 text-white font-semibold text-sm hover:bg-[#0b1018]/10 transition"
+                        >
+                          View Analytics
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+
+                  {/* Readiness strip */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-5">
+                    <div className="lg:col-span-2 rounded-2xl border border-white/10 bg-[#0b1018]/[0.03] p-5 sm:p-6">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Placement Readiness</p>
+                          <p className="mt-2 text-4xl font-black">{readinessScore}%</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs text-slate-400">Current focus</p>
+                          <p className="mt-1 font-bold text-cyan-300">{weakestSkill[0]}</p>
+                        </div>
+                      </div>
+                      <div className="mt-5 h-2 rounded-full bg-[#0b1018]/10 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 transition-all duration-700"
+                          style={{ width: `${readinessScore}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-purple-400/15 bg-purple-500/[0.05] p-5 sm:p-6">
+                      <p className="text-xs uppercase tracking-[0.18em] text-purple-300/70">Next Goal</p>
+                      <p className="mt-2 font-bold text-white">Strengthen {weakestSkill[0]}</p>
+                      <button
+                        onClick={() => setActive(weakestSkill[0])}
+                        className="mt-4 text-sm font-bold text-cyan-300 hover:text-cyan-200"
+                      >
+                        Start now →
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Score cards */}
+                  <div className="mt-5 grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+                    {[
+                      ["Resume", resumeScore, "📄"],
+                      ["Coding", codingScore, "💻"],
+                      ["Aptitude", aptitudeScore, "🧠"],
+                      ["Projects", projectScore, "🚀"],
+                      ["Interview", interviewScore, "🎤"],
+                    ].map(([name, score, icon]) => (
+                      <button
+                        key={name}
+                        onClick={() => setActive(name)}
+                        className="text-left rounded-2xl border border-white/10 bg-[#0b1018]/[0.03] p-4 sm:p-5 hover:bg-[#0b1018]/[0.06] hover:border-cyan-400/20 transition group"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-lg">{icon}</span>
+                          <span className="text-xs text-slate-300 group-hover:text-cyan-400">→</span>
+                        </div>
+                        <p className="mt-4 text-xs uppercase tracking-wider text-slate-400">{name}</p>
+                        <p className="mt-1 text-2xl sm:text-3xl font-black">{score}%</p>
+                        <div className="mt-3 h-1 rounded-full bg-[#0b1018]/10">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-purple-500"
+                            style={{ width: `${score}%` }}
+                          />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Plan + preparation */}
+                  <div className="grid grid-cols-1 xl:grid-cols-5 gap-5 mt-5">
+                    <div className="xl:col-span-3 rounded-3xl border border-white/10 bg-[#0b1018]/[0.03] p-5 sm:p-6">
+                      <div className="flex items-center justify-between mb-5">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.18em] text-cyan-400">Daily AI Plan</p>
+                          <h2 className="text-xl font-bold mt-1">Today's Placement Plan</h2>
+                        </div>
+                        <span className="text-xs text-slate-400">Personalized</span>
+                      </div>
+
+                      {dailyPlanLoading ? (
+                        <p className="text-sm text-slate-400">Creating your plan...</p>
+                      ) : dailyPlan.length === 0 ? (
+                        <p className="text-sm text-slate-400">No placement plan available yet.</p>
+                      ) : (
+                        <div className="space-y-3">
+                          {dailyPlan.map((item, index) => (
+                            <div
+                              key={index}
+                              className="rounded-2xl border border-white/10 bg-black/20 p-4 hover:border-cyan-400/20 transition"
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-cyan-300">0{index + 1}</span>
+                                    <h3 className="font-bold">{item.area}</h3>
+                                  </div>
+                                  <p className="mt-2 text-sm text-slate-400">{item.task}</p>
+                                </div>
+                                <span className="shrink-0 rounded-full border border-white/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-slate-400">
+                                  {item.priority}
+                                </span>
+                              </div>
+                              <div className="mt-3 flex items-center justify-between">
+                                <span className="text-xs text-slate-300">Current score: {item.score}%</span>
+                                <button
+                                  onClick={() => goToPlanArea(item.area)}
+                                  className="text-xs font-bold text-cyan-300 hover:text-cyan-200"
+                                >
+                                  Start Practice →
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="xl:col-span-2 rounded-3xl border border-white/10 bg-[#0b1018]/[0.03] p-5 sm:p-6">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-purple-300">Company Readiness</p>
+                        <h2 className="text-xl font-bold mt-1">Company Preparation</h2>
+                      </div>
+
+                      {companyPreparationLoading ? (
+                        <p className="text-sm text-slate-400 mt-6">Loading preparation progress...</p>
+                      ) : companyPreparation ? (
+                        <>
+                          <div className="mt-7 flex items-end justify-between">
+                            <div>
+                              <p className="text-sm text-slate-400">{companyPreparation.company}</p>
+                              <p className="text-xs text-slate-300 mt-1">{companyPreparation.role}</p>
+                            </div>
+                            <span className="text-4xl font-black text-cyan-300">{companyPreparation.percentage}%</span>
+                          </div>
+                          <div className="mt-5 h-2 rounded-full bg-[#0b1018]/10 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-purple-500 to-cyan-400"
+                              style={{ width: `${companyPreparation.percentage}%` }}
+                            />
+                          </div>
+                          <p className="mt-3 text-xs text-slate-400">
+                            {companyPreparation.completedSkills} / {companyPreparation.totalSkills} skills completed
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm text-slate-400 mt-6">Start preparing for your target companies.</p>
+                      )}
+
+                      <button
+                        onClick={() => setActive("Companies")}
+                        className="mt-7 w-full rounded-xl border border-white/10 bg-[#0b1018]/5 py-3 text-sm font-bold text-white hover:bg-[#0b1018]/10 transition"
+                      >
+                        Explore Companies →
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Skill snapshot */}
+                  <div className="mt-5 rounded-3xl border border-white/10 bg-[#0b1018]/[0.03] p-5 sm:p-6">
+                    <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-6">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Skill Snapshot</p>
+                        <h2 className="text-xl font-bold mt-1">Build the skills companies need</h2>
+                      </div>
+                      <button
+                        onClick={() => setActive("Progress")}
+                        className="text-sm font-bold text-cyan-300 hover:text-cyan-200"
+                      >
+                        View full progress →
+                      </button>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+                      {[
+                        ["Python", 80],
+                        ["SQL", 62],
+                        ["DSA", 58],
+                        ["DBMS", 70],
+                        ["Communication", 65],
+                      ].map(([name, value]) => (
+                        <div key={name}>
+                          <div className="flex justify-between text-xs mb-2">
+                            <span className="text-slate-400">{name}</span>
+                            <span className="font-bold text-white">{value}%</span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-[#0b1018]/10">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-purple-500"
+                              style={{ width: `${value}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
-
-            {/* Stats */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-6">
-
-              <StatCard
-                title="Coding"
-                value={`${codingScore}%`}
-                icon="💻"
-                subtitle="127 problems solved"
-              />
-
-              <StatCard
-                title="Aptitude"
-                value={`${aptitudeScore}%`}
-                icon="🧮"
-                subtitle="16 tests completed"
-              />
-
-              <StatCard
-                title="Resume"
-                value={`${resumeScore}%`}
-                icon="📄"
-                subtitle={resumeScore > 0 ? "Good profile" : "Not analyzed yet"}
-              />
-
-              <StatCard
-                title="Projects"
-                value={`${projectScore}%`}
-                icon="🏗️"
-                subtitle="3 projects added"
-              />
-
-            </div>
-
-            {/* Lower Section */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-              {/* Today's Tasks */}
-              <div className="lg:col-span-2 bg-white rounded-2xl p-6 shadow-sm border">
-
-                <div className="flex justify-between mb-5">
-                  <div>
-                    <h3 className="text-lg font-bold">
-                      Today's Tasks
-                    </h3>
-                    <p className="text-sm text-slate-500">
-                      Complete these tasks to improve your score.
-                    </p>
-                  </div>
-
-                  <span className="text-blue-600 font-semibold">
-                    2/4
-                  </span>
-                </div>
-
-                <div className="space-y-3">
-
-                  <Task text="Solve 3 coding problems" completed />
-
-                  <Task text="Complete SQL aptitude quiz" />
-
-                  <Task text="Practice 2 HR interview questions" />
-
-                  <Task text="Review your resume" completed />
-
-                </div>
-              </div>
-
-              {/* Quick Progress */}
-              <div className="bg-white rounded-2xl p-6 shadow-sm border">
-
-                <h3 className="text-lg font-bold mb-5">
-                  Skill Progress
-                </h3>
-
-                <Progress name="Python" value="80%" />
-                <Progress name="SQL" value="62%" />
-                <Progress name="DSA" value="58%" />
-                <Progress name="DBMS" value="70%" />
-                <Progress name="Communication" value="65%" />
-
-              </div>
-
-            </div>
-
-            {/* Next Goal */}
-            <div className="mt-6 bg-white rounded-2xl p-6 border shadow-sm">
-
-              <h3 className="text-lg font-bold mb-2">
-                🎯 Your Next Goal
-              </h3>
-
-              <p className="text-slate-600">
-                Improve your DSA and SQL skills to increase your
-                placement readiness.
-              </p>
-
-              <button className="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg">
-                Start Learning
-              </button>
-
-            </div>
-
-              </>
-            )}
-
           </section>
         )}
       </main>
@@ -622,30 +1132,74 @@ function AuthPage({ onAuthSuccess }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 sm:p-6">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen bg-[#05070d] text-white flex items-center justify-center p-4 relative overflow-hidden">
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute -top-32 -left-20 w-96 h-96 rounded-full bg-cyan-500/10 blur-3xl" />
+        <div className="absolute -bottom-32 -right-20 w-96 h-96 rounded-full bg-purple-600/10 blur-3xl" />
+        <div
+          className="absolute inset-0 opacity-20"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(34,211,238,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.08) 1px, transparent 1px)",
+            backgroundSize: "48px 48px",
+          }}
+        />
+      </div>
 
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold">
-            Placement<span className="text-blue-600">Pro</span>
+      <div className="relative z-10 w-full max-w-5xl grid lg:grid-cols-2 gap-8 items-center">
+        <div className="hidden lg:block">
+          <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-400/5 px-4 py-2 text-xs font-semibold text-cyan-300">
+            <span className="w-2 h-2 rounded-full bg-cyan-300 animate-pulse" />
+            AI-POWERED PLACEMENT PLATFORM
+          </div>
+
+          <h1 className="mt-7 text-6xl font-black leading-[0.95] tracking-[-0.04em]">
+            Build skills.
+            <br />
+            <span className="bg-gradient-to-r from-cyan-300 via-blue-400 to-purple-500 bg-clip-text text-transparent">
+              Get ready.
+            </span>
+            <br />
+            Get placed.
           </h1>
-          <p className="text-slate-500 mt-1">
-            AI Placement Coach
+
+          <p className="mt-6 max-w-lg text-slate-400 leading-7">
+            A personalized preparation dashboard for coding, aptitude, resume,
+            projects, interviews and company readiness.
           </p>
+
+          <div className="mt-8 flex gap-6 text-sm text-slate-400">
+            <span>01 · Practice</span>
+            <span>02 · Analyze</span>
+            <span>03 · Improve</span>
+          </div>
         </div>
 
-        <div className="bg-white rounded-2xl border shadow-sm p-6">
+        <div className="relative rounded-[28px] border border-white/10 bg-[#0b1018]/[0.04] backdrop-blur-xl p-6 sm:p-8 shadow-[0_0_60px_rgba(34,211,238,0.08)]">
+          <div className="absolute -top-20 -right-20 w-40 h-40 rounded-full border border-cyan-400/10 pointer-events-none" />
 
-          <div className="flex mb-6 rounded-lg bg-slate-100 p-1">
+          <div className="text-center mb-7">
+            <div className="mx-auto w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-600 flex items-center justify-center font-black text-xl shadow-[0_0_25px_rgba(34,211,238,0.2)]">
+              P
+            </div>
+            <h1 className="text-2xl font-black mt-4">
+              Placement<span className="text-cyan-400">Pro</span>
+            </h1>
+            <p className="text-xs uppercase tracking-[0.18em] text-slate-400 mt-1">
+              AI Placement Coach
+            </p>
+          </div>
+
+          <div className="flex mb-6 rounded-xl bg-black/20 border border-white/10 p-1">
             <button
               onClick={() => {
                 setMode("login");
                 setError("");
               }}
-              className={`flex-1 py-2 rounded-lg font-semibold transition ${
+              className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition ${
                 mode === "login"
-                  ? "bg-white shadow-sm text-blue-600"
-                  : "text-slate-500"
+                  ? "bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 shadow-lg"
+                  : "text-slate-400 hover:text-white"
               }`}
             >
               Login
@@ -656,10 +1210,10 @@ function AuthPage({ onAuthSuccess }) {
                 setMode("register");
                 setError("");
               }}
-              className={`flex-1 py-2 rounded-lg font-semibold transition ${
+              className={`flex-1 py-2.5 rounded-lg text-sm font-bold transition ${
                 mode === "register"
-                  ? "bg-white shadow-sm text-blue-600"
-                  : "text-slate-500"
+                  ? "bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 shadow-lg"
+                  : "text-slate-400 hover:text-white"
               }`}
             >
               Register
@@ -667,16 +1221,15 @@ function AuthPage({ onAuthSuccess }) {
           </div>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-lg text-sm mb-4">
+            <div className="bg-red-500/10 border border-red-400/20 text-red-300 p-3 rounded-xl text-sm mb-4">
               {error}
             </div>
           )}
 
           {mode === "login" ? (
             <form onSubmit={submitLogin} className="space-y-4">
-
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
                   Email
                 </label>
                 <input
@@ -685,12 +1238,13 @@ function AuthPage({ onAuthSuccess }) {
                   value={loginForm.email}
                   onChange={handleLoginChange}
                   required
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50 focus:ring-2 focus:ring-cyan-400/10 placeholder:text-slate-200"
+                  placeholder="you@example.com"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
                   Password
                 </label>
                 <input
@@ -699,54 +1253,47 @@ function AuthPage({ onAuthSuccess }) {
                   value={loginForm.password}
                   onChange={handleLoginChange}
                   required
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50 focus:ring-2 focus:ring-cyan-400/10"
+                  placeholder="Enter your password"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-lg font-semibold disabled:opacity-50 transition"
+                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 font-black disabled:opacity-50 hover:scale-[1.01] transition"
               >
-                {submitting ? "Logging in..." : "Login"}
+                {submitting ? "Logging in..." : "Enter PlacementPro →"}
               </button>
-
             </form>
           ) : (
             <form onSubmit={submitRegister} className="space-y-4">
-
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
-                  Name
-                </label>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Name</label>
                 <input
                   type="text"
                   name="name"
                   value={registerForm.name}
                   onChange={handleRegisterChange}
                   required
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
-                  Email
-                </label>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Email</label>
                 <input
                   type="email"
                   name="email"
                   value={registerForm.email}
                   onChange={handleRegisterChange}
                   required
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
-                  Password
-                </label>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Password</label>
                 <input
                   type="password"
                   name="password"
@@ -754,48 +1301,38 @@ function AuthPage({ onAuthSuccess }) {
                   onChange={handleRegisterChange}
                   required
                   minLength={6}
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">
-                    Degree
-                  </label>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Degree</label>
                   <input
                     type="text"
                     name="degree"
                     value={registerForm.degree}
                     onChange={handleRegisterChange}
                     required
-                    className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">
-                    Branch
-                  </label>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Branch</label>
                   <input
                     type="text"
                     name="branch"
                     value={registerForm.branch}
                     onChange={handleRegisterChange}
                     required
-                    className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50"
                   />
                 </div>
-
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">
-                    CGPA
-                  </label>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">CGPA</label>
                   <input
                     type="number"
                     step="0.01"
@@ -803,39 +1340,32 @@ function AuthPage({ onAuthSuccess }) {
                     value={registerForm.cgpa}
                     onChange={handleRegisterChange}
                     required
-                    className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">
-                    Target Role
-                  </label>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Target Role</label>
                   <input
                     type="text"
                     name="target_role"
                     value={registerForm.target_role}
                     onChange={handleRegisterChange}
                     required
-                    className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full bg-black/20 border border-white/10 text-white rounded-xl px-4 py-3 outline-none focus:border-cyan-400/50"
                   />
                 </div>
-
               </div>
 
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-lg font-semibold disabled:opacity-50 transition"
+                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 font-black disabled:opacity-50 hover:scale-[1.01] transition"
               >
-                {submitting ? "Creating account..." : "Create Account"}
+                {submitting ? "Creating account..." : "Create My Account →"}
               </button>
-
             </form>
           )}
-
         </div>
-
       </div>
     </div>
   );
@@ -1016,20 +1546,20 @@ function ResumePage({ student }) {
             Resume Analyzer 📄
           </h2>
 
-          <p className="text-slate-500 mt-1">
+          <p className="text-slate-400 mt-1">
             Upload your resume and get an AI-powered placement analysis.
           </p>
         </div>
 
 
         {/* Upload Card */}
-        <div className="bg-white rounded-2xl border shadow-sm p-6 mb-6">
+        <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6 mb-6">
 
           <h3 className="text-lg font-bold mb-2">
             Upload Your Resume
           </h3>
 
-          <p className="text-sm text-slate-500 mb-5">
+          <p className="text-sm text-slate-400 mb-5">
             Supported formats: PDF and DOCX
           </p>
 
@@ -1037,10 +1567,19 @@ function ResumePage({ student }) {
             type="file"
             accept=".pdf,.docx"
             onChange={(e) => {
-              setFile(e.target.files[0]);
+              const selected = e.target.files[0];
+
+              if (selected && selected.size > 5 * 1024 * 1024) {
+                alert("File size must be less than 5 MB.");
+                e.target.value = "";
+                setFile(null);
+                return;
+              }
+
+              setFile(selected);
               setResult(null);
             }}
-            className="block w-full border border-slate-300 rounded-lg p-3"
+            className="block w-full border border-white/10 rounded-lg p-3"
           />
 
           {file && (
@@ -1052,7 +1591,7 @@ function ResumePage({ student }) {
           <button
             onClick={analyzeResume}
             disabled={loading}
-            className="mt-5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white px-6 py-3 rounded-lg font-semibold"
+            className="mt-5 bg-cyan-400 hover:bg-cyan-300 disabled:bg-blue-300 text-white px-6 py-3 rounded-lg font-semibold"
           >
             {loading ? "Analyzing..." : "Analyze Resume"}
           </button>
@@ -1064,36 +1603,20 @@ function ResumePage({ student }) {
         {result && (
           <div className="space-y-6">
 
-            {/* Overall Score */}
-            <div className="bg-white rounded-2xl border shadow-sm p-6">
+            {/* Resume Score */}
+            <div className="bg-[#0b1018] rounded-2xl border border-white/10 shadow-sm p-6">
 
-              <h3 className="text-lg font-bold mb-5">
-                Resume Score
-              </h3>
-
-              <div className="flex flex-col sm:flex-row items-center gap-6">
-
-                <div className="w-32 h-32 rounded-full bg-blue-50 border-8 border-blue-600 flex items-center justify-center">
-
-                  <div className="text-center">
-
-                    <p className="text-4xl font-bold text-blue-600">
-                      {result.resume_score}
-                    </p>
-
-                    <p className="text-xs text-slate-500">
-                      / 100
-                    </p>
-
-                  </div>
-
-                </div>
-
-
+              <div className="flex items-center justify-between">
                 <div>
+                  <p className="text-sm text-slate-400">
+                    Resume Score
+                  </p>
 
-                  <p className="font-semibold text-xl">
+                  <h2 className="text-4xl font-bold text-white mt-1">
+                    {result.resume_score ?? 0}%
+                  </h2>
 
+                  <p className="font-semibold mt-2">
                     {result.resume_score >= 80
                       ? "Excellent Resume! 🎉"
                       : result.resume_score >= 60
@@ -1101,24 +1624,36 @@ function ResumePage({ student }) {
                       : result.resume_score >= 40
                       ? "Needs Improvement ⚠️"
                       : "Resume Needs Major Improvement ❗"}
-
                   </p>
-
-                  <p className="text-sm text-slate-500 mt-2">
-                    Your score is calculated using skills, education,
-                    projects, experience, certifications and resume
-                    completeness.
-                  </p>
-
                 </div>
 
+                <div className="w-20 h-20 rounded-full border-8 border-cyan-400/20 flex items-center justify-center flex-shrink-0">
+                  <span className="font-bold text-cyan-300">
+                    {result.resume_score ?? 0}
+                  </span>
+                </div>
               </div>
+
+              <div className="w-full bg-[#0b1018]/10 rounded-full h-3 mt-5">
+                <div
+                  className="bg-cyan-400 h-3 rounded-full transition-all"
+                  style={{
+                    width: `${Math.min(result.resume_score ?? 0, 100)}%`,
+                  }}
+                />
+              </div>
+
+              <p className="text-sm text-slate-400 mt-4">
+                Your score is calculated using skills, education,
+                projects, experience, certifications and resume
+                completeness.
+              </p>
 
             </div>
 
 
             {/* Score Breakdown */}
-            <div className="bg-white rounded-2xl border shadow-sm p-6">
+            <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
 
               <div className="mb-5">
 
@@ -1126,7 +1661,7 @@ function ResumePage({ student }) {
                   📊 Score Breakdown
                 </h3>
 
-                <p className="text-sm text-slate-500 mt-1">
+                <p className="text-sm text-slate-400 mt-1">
                   See how each part of your resume contributes to the score.
                 </p>
 
@@ -1144,7 +1679,7 @@ function ResumePage({ student }) {
                   return (
                     <div
                       key={item.name}
-                      className="border rounded-xl p-4"
+                      className="bg-[#080d15] text-white border-white/10 rounded-xl p-4"
                     >
 
                       <div className="flex justify-between items-center mb-2">
@@ -1161,7 +1696,7 @@ function ResumePage({ student }) {
 
                         </div>
 
-                        <span className="font-bold text-blue-600">
+                        <span className="font-bold text-cyan-300">
                           {item.score}/{item.max}
                         </span>
 
@@ -1171,7 +1706,7 @@ function ResumePage({ student }) {
                       <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
 
                         <div
-                          className="h-3 bg-blue-600 rounded-full transition-all duration-700"
+                          className="h-3 bg-cyan-400 rounded-full transition-all duration-700"
                           style={{
                             width: `${percentage}%`,
                           }}
@@ -1180,7 +1715,7 @@ function ResumePage({ student }) {
                       </div>
 
 
-                      <p className="text-xs text-slate-500 mt-2">
+                      <p className="text-xs text-slate-400 mt-2">
                         {percentage}% of available points
                       </p>
 
@@ -1194,84 +1729,101 @@ function ResumePage({ student }) {
             </div>
 
 
-            {/* Strengths and Missing Skills */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Detected Skills + Skills to Improve */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
 
-
-              {/* Strengths */}
-              <div className="bg-white rounded-2xl border shadow-sm p-6">
-
-                <h3 className="text-lg font-bold mb-4">
-                  ✅ Strengths
+              {/* Detected Skills */}
+              <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
+                <h3 className="text-lg font-bold text-white">
+                  Detected Skills
                 </h3>
 
-                {result.strengths?.length > 0 ? (
+                <p className="text-sm text-slate-400 mt-1 mb-4">
+                  Skills identified from your resume
+                </p>
 
-                  <div className="space-y-2">
-
-                    {result.strengths.map((strength, index) => (
-
-                      <div
+                <div className="flex flex-wrap gap-2">
+                  {(result.detected_skills || []).length > 0 ? (
+                    result.detected_skills.map((skill, index) => (
+                      <span
                         key={index}
-                        className="bg-green-50 text-green-700 px-4 py-3 rounded-lg text-sm font-medium"
+                        className="px-3 py-1.5 rounded-lg bg-green-50 text-green-700 text-xs font-medium"
                       >
-                        ✓ {strength}
-                      </div>
-
-                    ))}
-
-                  </div>
-
-                ) : (
-
-                  <p className="text-slate-500">
-                    No major strengths detected yet.
-                  </p>
-
-                )}
-
+                        ✓ {skill}
+                      </span>
+                    ))
+                  ) : (
+                    <p className="text-sm text-slate-400">
+                      No skills detected.
+                    </p>
+                  )}
+                </div>
               </div>
 
-
-              {/* Missing Skills */}
-              <div className="bg-white rounded-2xl border shadow-sm p-6">
-
-                <h3 className="text-lg font-bold mb-4">
-                  ⚠️ Missing Skills
+              {/* Skills to Improve */}
+              <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
+                <h3 className="text-lg font-bold text-white">
+                  Skills to Improve
                 </h3>
 
-                {result.missing_skills?.length > 0 ? (
+                <p className="text-sm text-slate-400 mt-1 mb-4">
+                  Skills that could strengthen your resume
+                </p>
 
-                  <div className="flex flex-wrap gap-2">
-
-                    {result.missing_skills.map((skill) => (
-
+                <div className="flex flex-wrap gap-2">
+                  {(result.missing_skills || []).length > 0 ? (
+                    result.missing_skills.map((skill, index) => (
                       <span
-                        key={skill}
-                        className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-sm font-medium"
+                        key={index}
+                        className="px-3 py-1.5 rounded-lg bg-orange-50 text-orange-700 text-xs font-medium"
                       >
-                        {skill}
+                        + {skill}
                       </span>
-
-                    ))}
-
-                  </div>
-
-                ) : (
-
-                  <p className="text-green-600">
-                    Great! No missing skills detected.
-                  </p>
-
-                )}
-
+                    ))
+                  ) : (
+                    <p className="text-sm text-green-600 font-medium">
+                      ✓ No major skill gaps detected.
+                    </p>
+                  )}
+                </div>
               </div>
 
             </div>
 
 
+            {/* Strengths */}
+            <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
+              <h3 className="text-lg font-bold text-white mb-4">
+                Resume Strengths
+              </h3>
+
+              {(result.strengths || []).length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {result.strengths.map((strength, index) => (
+                    <div
+                      key={index}
+                      className="flex items-start gap-3 p-3 rounded-xl bg-green-50"
+                    >
+                      <span className="text-green-600 font-bold">
+                        ✓
+                      </span>
+
+                      <p className="text-sm text-green-800">
+                        {strength}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-slate-400">
+                  No strengths available.
+                </p>
+              )}
+            </div>
+
+
             {/* Suggestions */}
-            <div className="bg-white rounded-2xl border shadow-sm p-6">
+            <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
 
               <h3 className="text-lg font-bold mb-4">
                 💡 Improvement Suggestions
@@ -1285,7 +1837,7 @@ function ResumePage({ student }) {
 
                     <div
                       key={index}
-                      className="bg-blue-50 rounded-lg p-4 text-slate-700"
+                      className="bg-blue-50 rounded-lg p-4 text-slate-200"
                     >
 
                       <span className="font-semibold">
@@ -1311,12 +1863,12 @@ function ResumePage({ student }) {
             </div>
 
             {history.length > 0 && (
-              <div className="bg-white rounded-2xl border shadow-sm p-6">
+              <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
                 <h3 className="text-lg font-bold mb-2">
                   📈 Resume Analysis History
                 </h3>
 
-                <p className="text-sm text-slate-500 mb-5">
+                <p className="text-sm text-slate-400 mb-5">
                   Track your previous resume scores and improvement.
                 </p>
 
@@ -1331,17 +1883,17 @@ function ResumePage({ student }) {
                           {item.filename}
                         </p>
 
-                        <p className="text-sm text-slate-500">
+                        <p className="text-sm text-slate-400">
                           Target Role: {item.target_role}
                         </p>
                       </div>
 
                       <div className="text-left sm:text-right">
-                        <p className="text-2xl font-bold text-blue-600">
+                        <p className="text-2xl font-bold text-cyan-300">
                           {item.resume_score}/100
                         </p>
 
-                        <p className="text-xs text-slate-500">
+                        <p className="text-xs text-slate-400">
                           Resume Score
                         </p>
                       </div>
@@ -1359,76 +1911,60 @@ function ResumePage({ student }) {
             <p className="font-semibold text-blue-700">
               🤖 AI is analyzing your resume...
             </p>
-            <p className="mt-1 text-sm text-blue-600">
+            <p className="mt-1 text-sm text-cyan-300">
               Checking your skills and placement improvement areas.
             </p>
           </div>
         )}
 
         {aiRecommendations && !aiLoading && (
-          <div className="mt-6 rounded-xl border bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-bold">
-              🤖 AI Placement Recommendations
-            </h2>
+          <div className="mt-6 bg-[#0b1018] rounded-2xl border border-white/10 shadow-sm p-6">
 
-            <p className="mt-2 text-sm text-gray-600">
-              Target Role:{" "}
-              <span className="font-semibold">
-                {aiRecommendations.target_role}
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-bold text-white">
+                  AI Resume Recommendations
+                </h3>
+
+                <p className="text-sm text-slate-400 mt-1">
+                  Suggestions to improve your resume for{" "}
+                  {aiRecommendations.target_role || "your target role"}.
+                </p>
+              </div>
+
+              <span className="px-3 py-1 rounded-full bg-purple-50 text-purple-600 text-xs font-semibold">
+                AI Insights
               </span>
-            </p>
-
-            <div className="mt-5">
-              <h3 className="font-semibold text-green-700">
-                ✅ Detected Skills
-              </h3>
-
-              <div className="mt-2 flex flex-wrap gap-2">
-                {aiRecommendations.detected_skills.map((skill) => (
-                  <span
-                    key={skill}
-                    className="rounded-full bg-green-100 px-3 py-1 text-sm text-green-700"
-                  >
-                    {skill}
-                  </span>
-                ))}
-              </div>
             </div>
 
-            <div className="mt-5">
-              <h3 className="font-semibold text-red-700">
-                ⚠️ Missing Skills
-              </h3>
+            <div className="space-y-3">
 
-              <div className="mt-2 flex flex-wrap gap-2">
-                {aiRecommendations.missing_skills.map((skill) => (
-                  <span
-                    key={skill}
-                    className="rounded-full bg-red-100 px-3 py-1 text-sm text-red-700"
+              {(aiRecommendations.recommendations || []).map(
+                (recommendation, index) => (
+                  <div
+                    key={index}
+                    className="p-4 rounded-xl bg-[#0b1018]/[0.03] border border-gray-100"
                   >
-                    {skill}
-                  </span>
-                ))}
-              </div>
-            </div>
+                    <div className="flex gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center flex-shrink-0">
+                        <span className="text-purple-600 font-bold">
+                          {index + 1}
+                        </span>
+                      </div>
 
-            <div className="mt-5">
-              <h3 className="font-semibold text-blue-700">
-                🚀 Improvement Recommendations
-              </h3>
+                      <p className="text-sm text-slate-200">
+                        {typeof recommendation === "string"
+                          ? recommendation
+                          : recommendation.description ||
+                            recommendation.message ||
+                            recommendation.recommendation ||
+                            "Consider improving this area."}
+                      </p>
+                    </div>
+                  </div>
+                )
+              )}
 
-              <ul className="mt-2 space-y-2">
-                {aiRecommendations.recommendations.map(
-                  (recommendation, index) => (
-                    <li
-                      key={index}
-                      className="rounded-lg bg-blue-50 p-3 text-sm text-gray-700"
-                    >
-                      {recommendation}
-                    </li>
-                  )
-                )}
-              </ul>
             </div>
           </div>
         )}
@@ -1646,7 +2182,7 @@ function CodingPage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-4xl mx-auto">
-          <p className="text-slate-500">
+          <p className="text-slate-400">
             Loading coding questions...
           </p>
         </div>
@@ -1658,7 +2194,7 @@ function CodingPage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-4xl mx-auto">
-          <div className="bg-white rounded-2xl border shadow-sm p-6">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
             <h2 className="text-xl font-bold">
               No coding questions available.
             </h2>
@@ -1690,7 +2226,7 @@ function CodingPage({ student }) {
             💻 Coding Practice
           </h2>
 
-          <p className="text-slate-500 mt-1">
+          <p className="text-slate-400 mt-1">
             Practice coding and improve your placement readiness.
           </p>
         </div>
@@ -1700,15 +2236,15 @@ function CodingPage({ student }) {
             ✅ Coding Test Completed
           </div>
         ) : (
-          <div className="inline-flex items-center px-4 py-2 mb-6 rounded-full bg-blue-100 text-blue-700 font-semibold">
+          <div className="inline-flex items-center px-4 py-2 mb-6 rounded-full bg-cyan-400/10 text-blue-700 font-semibold">
             📝 Test In Progress
           </div>
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Total Questions
             </p>
 
@@ -1717,18 +2253,18 @@ function CodingPage({ student }) {
             </p>
           </div>
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Attempted
             </p>
 
-            <p className="text-3xl font-bold text-blue-600 mt-1">
+            <p className="text-3xl font-bold text-cyan-300 mt-1">
               {stats.attempted}
             </p>
           </div>
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Correct
             </p>
 
@@ -1737,8 +2273,8 @@ function CodingPage({ student }) {
             </p>
           </div>
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Accuracy
             </p>
 
@@ -1747,19 +2283,19 @@ function CodingPage({ student }) {
             </p>
           </div>
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Coding Score
             </p>
 
-            <p className="text-3xl font-bold text-blue-600 mt-1">
+            <p className="text-3xl font-bold text-cyan-300 mt-1">
               {stats.coding_score}%
             </p>
           </div>
 
         </div>
 
-        <div className="bg-white rounded-2xl border shadow-sm p-6 mb-6">
+        <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6 mb-6">
 
           <h3 className="text-lg font-bold mb-4">
             Questions
@@ -1772,12 +2308,12 @@ function CodingPage({ student }) {
                 onClick={() => goToQuestion(index)}
                 className={`w-10 h-10 rounded-lg text-sm font-medium ${
                   currentIndex === index
-                    ? "bg-blue-600 text-white"
+                    ? "bg-cyan-400 text-white"
                     : codingResults[String(q.id)] === true
                     ? "bg-green-500 text-white"
                     : codingResults[String(q.id)] === false
                     ? "bg-red-500 text-white"
-                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                    : "bg-[#0b1018]/10 text-slate-200 hover:bg-gray-300"
                 }`}
               >
                 {index + 1}
@@ -1788,7 +2324,7 @@ function CodingPage({ student }) {
           <div className="flex flex-wrap gap-4 mt-4 text-sm">
 
             <div className="flex items-center gap-2">
-              <span className="w-4 h-4 rounded bg-blue-600"></span>
+              <span className="w-4 h-4 rounded bg-cyan-400"></span>
               Current
             </div>
 
@@ -1803,7 +2339,7 @@ function CodingPage({ student }) {
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="w-4 h-4 rounded bg-gray-200"></span>
+              <span className="w-4 h-4 rounded bg-[#0b1018]/10"></span>
               Not Attempted
             </div>
 
@@ -1812,14 +2348,14 @@ function CodingPage({ student }) {
         </div>
 
         {currentIndex < questions.length ? (
-          <div className="bg-white rounded-2xl border shadow-sm p-6">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
 
             <div className="flex justify-between items-center mb-6">
-              <span className="text-sm font-semibold text-blue-600">
+              <span className="text-sm font-semibold text-cyan-300">
                 Question {currentIndex + 1}
               </span>
 
-              <span className="text-sm text-slate-500">
+              <span className="text-sm text-slate-400">
                 {questions.length} Questions
               </span>
             </div>
@@ -1832,9 +2368,9 @@ function CodingPage({ student }) {
                 </span>
               </div>
 
-              <div className="w-full bg-gray-200 rounded-full h-2">
+              <div className="w-full bg-[#0b1018]/10 rounded-full h-2">
                 <div
-                  className="bg-blue-600 h-2 rounded-full"
+                  className="bg-cyan-400 h-2 rounded-full"
                   style={{
                     width: `${((currentIndex + 1) / questions.length) * 100}%`
                   }}
@@ -1843,11 +2379,11 @@ function CodingPage({ student }) {
             </div>
 
             <div className="flex gap-2 mb-3">
-              <span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-sm">
+              <span className="px-3 py-1 rounded-full bg-cyan-400/10 text-blue-700 text-sm">
                 {question.category}
               </span>
 
-              <span className="px-3 py-1 rounded-full bg-gray-100 text-gray-700 text-sm">
+              <span className="px-3 py-1 rounded-full bg-[#0b1018]/[0.06] text-slate-200 text-sm">
                 {question.difficulty}
               </span>
             </div>
@@ -1869,11 +2405,11 @@ function CodingPage({ student }) {
                   className={`w-full text-left p-3 rounded-lg border ${
                     selectedAnswer === option
                       ? "border-blue-600 bg-blue-50"
-                      : "border-gray-200"
+                      : "border-white/10"
                   } ${
                     result || attemptedQuestionIds.includes(question.id)
                       ? "cursor-not-allowed opacity-70"
-                      : "hover:bg-gray-50"
+                      : "hover:bg-[#0b1018]/[0.03]"
                   }`}
                 >
                   {option}
@@ -1888,7 +2424,7 @@ function CodingPage({ student }) {
                 !!result ||
                 attemptedQuestionIds.includes(question.id)
               }
-              className="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              className="mt-6 bg-cyan-400 hover:bg-cyan-300 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {result
                 ? "Answer Submitted"
@@ -1941,7 +2477,7 @@ function CodingPage({ student }) {
               <button
                 onClick={() => goToQuestion(Math.max(currentIndex - 1, 0))}
                 disabled={currentIndex === 0}
-                className="px-4 py-2 rounded-lg bg-gray-200 disabled:opacity-50"
+                className="px-4 py-2 rounded-lg bg-[#0b1018]/10 disabled:opacity-50"
               >
                 ← Previous
               </button>
@@ -1953,7 +2489,7 @@ function CodingPage({ student }) {
                   }
                 }}
                 disabled={currentIndex === questions.length - 1}
-                className="px-4 py-2 rounded-lg bg-blue-600 text-white disabled:opacity-50"
+                className="px-4 py-2 rounded-lg bg-cyan-400 text-white disabled:opacity-50"
               >
                 Next →
               </button>
@@ -1961,12 +2497,12 @@ function CodingPage({ student }) {
 
           </div>
         ) : (
-          <div className="bg-white rounded-2xl border shadow-sm p-8 text-center">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-8 text-center">
             <h3 className="text-2xl font-bold">
               🏆 Final Coding Result
             </h3>
 
-            <p className="text-4xl font-bold text-blue-600 mt-5">
+            <p className="text-4xl font-bold text-cyan-300 mt-5">
               {stats.coding_score}%
             </p>
 
@@ -1979,7 +2515,7 @@ function CodingPage({ student }) {
                 <p className="text-xl font-bold">
                   {stats.attempted}/{stats.total_questions}
                 </p>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-400">
                   Attempted
                 </p>
               </div>
@@ -1988,7 +2524,7 @@ function CodingPage({ student }) {
                 <p className="text-xl font-bold text-green-600">
                   {stats.correct}
                 </p>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-400">
                   Correct
                 </p>
               </div>
@@ -1997,7 +2533,7 @@ function CodingPage({ student }) {
                 <p className="text-xl font-bold text-orange-600">
                   {stats.accuracy}%
                 </p>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-400">
                   Accuracy
                 </p>
               </div>
@@ -2195,7 +2731,7 @@ function AptitudePage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-4xl mx-auto">
-          <p className="text-slate-500">
+          <p className="text-slate-400">
             Loading aptitude questions...
           </p>
         </div>
@@ -2207,7 +2743,7 @@ function AptitudePage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-4xl mx-auto">
-          <div className="bg-white rounded-2xl border shadow-sm p-6">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
             <h2 className="text-xl font-bold">
               No aptitude questions available.
             </h2>
@@ -2239,7 +2775,7 @@ function AptitudePage({ student }) {
             🧮 Aptitude Practice
           </h2>
 
-          <p className="text-slate-500 mt-1">
+          <p className="text-slate-400 mt-1">
             Sharpen your quantitative and logical reasoning skills.
           </p>
         </div>
@@ -2249,15 +2785,15 @@ function AptitudePage({ student }) {
             ✅ Aptitude Test Completed
           </div>
         ) : (
-          <div className="inline-flex items-center px-4 py-2 mb-6 rounded-full bg-blue-100 text-blue-700 font-semibold">
+          <div className="inline-flex items-center px-4 py-2 mb-6 rounded-full bg-cyan-400/10 text-blue-700 font-semibold">
             📝 Test In Progress
           </div>
         )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Total Questions
             </p>
 
@@ -2266,18 +2802,18 @@ function AptitudePage({ student }) {
             </p>
           </div>
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Attempted
             </p>
 
-            <p className="text-3xl font-bold text-blue-600 mt-1">
+            <p className="text-3xl font-bold text-cyan-300 mt-1">
               {stats.attempted}
             </p>
           </div>
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Correct
             </p>
 
@@ -2286,8 +2822,8 @@ function AptitudePage({ student }) {
             </p>
           </div>
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Accuracy
             </p>
 
@@ -2296,19 +2832,19 @@ function AptitudePage({ student }) {
             </p>
           </div>
 
-          <div className="bg-white rounded-xl border p-5">
-            <p className="text-sm text-slate-500">
+          <div className="bg-[#0b1018] rounded-xl border p-5">
+            <p className="text-sm text-slate-400">
               Aptitude Score
             </p>
 
-            <p className="text-3xl font-bold text-blue-600 mt-1">
+            <p className="text-3xl font-bold text-cyan-300 mt-1">
               {stats.aptitude_score}%
             </p>
           </div>
 
         </div>
 
-        <div className="bg-white rounded-2xl border shadow-sm p-6 mb-6">
+        <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6 mb-6">
 
           <h3 className="text-lg font-bold mb-4">
             Questions
@@ -2321,12 +2857,12 @@ function AptitudePage({ student }) {
                 onClick={() => goToQuestion(index)}
                 className={`w-10 h-10 rounded-lg text-sm font-medium ${
                   currentIndex === index
-                    ? "bg-blue-600 text-white"
+                    ? "bg-cyan-400 text-white"
                     : aptitudeResults[String(q.id)] === true
                     ? "bg-green-500 text-white"
                     : aptitudeResults[String(q.id)] === false
                     ? "bg-red-500 text-white"
-                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                    : "bg-[#0b1018]/10 text-slate-200 hover:bg-gray-300"
                 }`}
               >
                 {index + 1}
@@ -2334,9 +2870,9 @@ function AptitudePage({ student }) {
             ))}
           </div>
 
-          <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+          <div className="w-full bg-[#0b1018]/10 rounded-full h-3 mb-2">
             <div
-              className="bg-blue-600 h-3 rounded-full"
+              className="bg-cyan-400 h-3 rounded-full"
               style={{
                 width: `${
                   stats.total_questions > 0
@@ -2347,14 +2883,14 @@ function AptitudePage({ student }) {
             ></div>
           </div>
 
-          <p className="text-sm text-slate-500 mb-4">
+          <p className="text-sm text-slate-400 mb-4">
             {stats.attempted} of {stats.total_questions} questions attempted
           </p>
 
           <div className="flex flex-wrap gap-4 text-sm">
 
             <div className="flex items-center gap-2">
-              <span className="w-4 h-4 rounded bg-blue-600"></span>
+              <span className="w-4 h-4 rounded bg-cyan-400"></span>
               Current
             </div>
 
@@ -2369,7 +2905,7 @@ function AptitudePage({ student }) {
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="w-4 h-4 rounded bg-gray-200"></span>
+              <span className="w-4 h-4 rounded bg-[#0b1018]/10"></span>
               Not Attempted
             </div>
 
@@ -2378,14 +2914,14 @@ function AptitudePage({ student }) {
         </div>
 
         {currentIndex < questions.length ? (
-          <div className="bg-white rounded-2xl border shadow-sm p-6">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
 
             <div className="flex justify-between items-center mb-6">
-              <span className="text-sm font-semibold text-blue-600">
+              <span className="text-sm font-semibold text-cyan-300">
                 Question {currentIndex + 1}
               </span>
 
-              <span className="text-sm text-slate-500">
+              <span className="text-sm text-slate-400">
                 {questions.length} Questions
               </span>
             </div>
@@ -2398,9 +2934,9 @@ function AptitudePage({ student }) {
                 </span>
               </div>
 
-              <div className="w-full bg-gray-200 rounded-full h-2">
+              <div className="w-full bg-[#0b1018]/10 rounded-full h-2">
                 <div
-                  className="bg-blue-600 h-2 rounded-full"
+                  className="bg-cyan-400 h-2 rounded-full"
                   style={{
                     width: `${((currentIndex + 1) / questions.length) * 100}%`
                   }}
@@ -2409,11 +2945,11 @@ function AptitudePage({ student }) {
             </div>
 
             <div className="flex gap-2 mb-3">
-              <span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-sm">
+              <span className="px-3 py-1 rounded-full bg-cyan-400/10 text-blue-700 text-sm">
                 {question.category}
               </span>
 
-              <span className="px-3 py-1 rounded-full bg-gray-100 text-gray-700 text-sm">
+              <span className="px-3 py-1 rounded-full bg-[#0b1018]/[0.06] text-slate-200 text-sm">
                 {question.difficulty}
               </span>
             </div>
@@ -2440,11 +2976,11 @@ function AptitudePage({ student }) {
                   className={`w-full text-left p-3 rounded-lg border ${
                     selectedAnswer === option
                       ? "border-blue-600 bg-blue-50"
-                      : "border-gray-200"
+                      : "border-white/10"
                   } ${
                     result || attemptedQuestionIds.includes(question.id)
                       ? "cursor-not-allowed opacity-70"
-                      : "hover:bg-gray-50"
+                      : "hover:bg-[#0b1018]/[0.03]"
                   }`}
                 >
                   {option}
@@ -2459,7 +2995,7 @@ function AptitudePage({ student }) {
                 !!result ||
                 attemptedQuestionIds.includes(question.id)
               }
-              className="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              className="mt-6 bg-cyan-400 hover:bg-cyan-300 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {result
                 ? "Answer Submitted"
@@ -2510,7 +3046,7 @@ function AptitudePage({ student }) {
               <button
                 onClick={() => goToQuestion(Math.max(currentIndex - 1, 0))}
                 disabled={currentIndex === 0}
-                className="px-4 py-2 rounded-lg bg-gray-200 disabled:opacity-50"
+                className="px-4 py-2 rounded-lg bg-[#0b1018]/10 disabled:opacity-50"
               >
                 ← Previous
               </button>
@@ -2522,7 +3058,7 @@ function AptitudePage({ student }) {
                   }
                 }}
                 disabled={currentIndex === questions.length - 1}
-                className="px-4 py-2 rounded-lg bg-blue-600 text-white disabled:opacity-50"
+                className="px-4 py-2 rounded-lg bg-cyan-400 text-white disabled:opacity-50"
               >
                 Next →
               </button>
@@ -2530,12 +3066,12 @@ function AptitudePage({ student }) {
 
           </div>
         ) : (
-          <div className="bg-white rounded-2xl border shadow-sm p-8 text-center">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-8 text-center">
             <h3 className="text-2xl font-bold">
               🏆 Final Aptitude Result
             </h3>
 
-            <p className="text-4xl font-bold text-blue-600 mt-5">
+            <p className="text-4xl font-bold text-cyan-300 mt-5">
               {stats.aptitude_score}%
             </p>
 
@@ -2543,7 +3079,7 @@ function AptitudePage({ student }) {
               {getAptitudePerformance(stats.aptitude_score)}
             </div>
 
-            <p className="text-slate-500 mb-2">
+            <p className="text-slate-400 mb-2">
               {stats.correct} correct out of {stats.total_questions}
             </p>
 
@@ -2552,7 +3088,7 @@ function AptitudePage({ student }) {
                 <p className="text-xl font-bold">
                   {stats.attempted}/{stats.total_questions}
                 </p>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-400">
                   Attempted
                 </p>
               </div>
@@ -2561,7 +3097,7 @@ function AptitudePage({ student }) {
                 <p className="text-xl font-bold text-green-600">
                   {stats.correct}
                 </p>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-400">
                   Correct
                 </p>
               </div>
@@ -2570,7 +3106,7 @@ function AptitudePage({ student }) {
                 <p className="text-xl font-bold text-orange-600">
                   {stats.accuracy}%
                 </p>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-400">
                   Accuracy
                 </p>
               </div>
@@ -2591,12 +3127,19 @@ function InterviewPage({ student }) {
   const [answer, setAnswer] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [selectedRole, setSelectedRole] = useState(
+    student?.target_role || "Software Developer"
+  );
+  const [evaluation, setEvaluation] = useState(null);
+  const [evaluating, setEvaluating] = useState(false);
+  const [interviewStats, setInterviewStats] = useState(null);
+  const [interviewRecommendations, setInterviewRecommendations] = useState([]);
 
   useEffect(() => {
     const loadQuestions = async () => {
       try {
         const response = await apiFetch(
-          `${API_BASE}/interview/questions`
+          `${API_BASE}/interview/questions?target_role=${encodeURIComponent(selectedRole)}`
         );
 
         const data = await response.json();
@@ -2612,7 +3155,51 @@ function InterviewPage({ student }) {
     };
 
     loadQuestions();
-  }, []);
+  }, [selectedRole]);
+
+  const loadInterviewStats = async () => {
+    if (!student?.id) return;
+
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/interview/stats/${student.id}`
+      );
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setInterviewStats(data);
+      }
+    } catch (error) {
+      console.error(
+        "Could not load interview statistics:",
+        error
+      );
+    }
+  };
+
+  const loadInterviewRecommendations = async () => {
+    if (!student?.id) return;
+
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/interview/recommendations/${student.id}`
+      );
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setInterviewRecommendations(
+          data.recommendations || []
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Could not load interview recommendations:",
+        error
+      );
+    }
+  };
 
   const submitAnswer = async () => {
     if (!answer.trim()) return;
@@ -2624,25 +3211,53 @@ function InterviewPage({ student }) {
 
     const question = questions[currentIndex];
 
+    setEvaluating(true);
+
     try {
-      const response = await apiFetch(
+      // Save the answer
+      const submitResponse = await apiFetch(
         `${API_BASE}/interview/${student.id}/submit?question_id=${question.id}&answer=${encodeURIComponent(answer)}`,
         {
           method: "POST",
         }
       );
 
-      const data = await response.json();
+      const submitData = await submitResponse.json();
 
-      if (!response.ok) {
-        alert(data.detail || "Unable to submit answer");
+      if (!submitResponse.ok) {
+        alert(submitData.detail || "Unable to submit answer");
         return;
       }
 
+      // Evaluate the answer
+      const evaluationResponse = await apiFetch(
+        `${API_BASE}/interview/evaluate?question_id=${question.id}&answer=${encodeURIComponent(answer)}`,
+        {
+          method: "POST",
+        }
+      );
+
+      const evaluationData = await evaluationResponse.json();
+
+      if (!evaluationResponse.ok) {
+        alert(
+          evaluationData.detail ||
+          "Unable to evaluate answer"
+        );
+        return;
+      }
+
+      setEvaluation(evaluationData);
       setSubmitted(true);
+
+      await loadInterviewStats();
+      await loadInterviewRecommendations();
+
     } catch (error) {
       console.error(error);
       alert("Could not connect to backend.");
+    } finally {
+      setEvaluating(false);
     }
   };
 
@@ -2651,6 +3266,7 @@ function InterviewPage({ student }) {
       setCurrentIndex(currentIndex + 1);
       setAnswer("");
       setSubmitted(false);
+      setEvaluation(null);
     }
   };
 
@@ -2659,6 +3275,7 @@ function InterviewPage({ student }) {
       setCurrentIndex(currentIndex - 1);
       setAnswer("");
       setSubmitted(false);
+      setEvaluation(null);
     }
   };
 
@@ -2666,7 +3283,7 @@ function InterviewPage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-4xl mx-auto">
-          <p className="text-slate-500">
+          <p className="text-slate-400">
             Loading interview questions...
           </p>
         </div>
@@ -2678,7 +3295,7 @@ function InterviewPage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-4xl mx-auto">
-          <div className="bg-white rounded-2xl border shadow-sm p-6">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
             <h2 className="text-xl font-bold">
               No interview questions available.
             </h2>
@@ -2699,19 +3316,56 @@ function InterviewPage({ student }) {
             🎤 Interview Preparation
           </h2>
 
-          <p className="text-slate-500 mt-1">
+          <p className="text-slate-400 mt-1">
             Question {currentIndex + 1} of {questions.length}
           </p>
+
+          <div className="mt-4">
+            <label className="block text-sm font-semibold text-slate-200 mb-2">
+              Target Role
+            </label>
+
+            <select
+              value={selectedRole}
+              onChange={(e) => {
+                setSelectedRole(e.target.value);
+                setCurrentIndex(0);
+                setAnswer("");
+                setSubmitted(false);
+              }}
+              className="border border-white/10 rounded-lg px-4 py-2 bg-[#0b1018]"
+            >
+              <option value="Software Developer">
+                Software Developer
+              </option>
+
+              <option value="Frontend Developer">
+                Frontend Developer
+              </option>
+
+              <option value="Backend Developer">
+                Backend Developer
+              </option>
+
+              <option value="Data Analyst">
+                Data Analyst
+              </option>
+
+              <option value="Data Scientist">
+                Data Scientist
+              </option>
+            </select>
+          </div>
         </div>
 
-        <div className="bg-white rounded-2xl border shadow-sm p-6">
+        <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
 
           <div className="flex gap-2 mb-4">
-            <span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-sm">
+            <span className="px-3 py-1 rounded-full bg-cyan-400/10 text-blue-700 text-sm">
               {question.category}
             </span>
 
-            <span className="px-3 py-1 rounded-full bg-gray-100 text-gray-700 text-sm">
+            <span className="px-3 py-1 rounded-full bg-[#0b1018]/[0.06] text-slate-200 text-sm">
               {question.difficulty}
             </span>
           </div>
@@ -2725,7 +3379,7 @@ function InterviewPage({ student }) {
             onChange={(e) => setAnswer(e.target.value)}
             disabled={submitted}
             placeholder="Write your answer here..."
-            className="w-full min-h-40 border border-slate-300 rounded-lg p-4 disabled:opacity-70 disabled:cursor-not-allowed"
+            className="w-full min-h-40 border border-white/10 rounded-lg p-4 disabled:opacity-70 disabled:cursor-not-allowed"
           />
 
           <div className="flex gap-3 mt-5">
@@ -2733,15 +3387,19 @@ function InterviewPage({ student }) {
             <button
               onClick={submitAnswer}
               disabled={!answer.trim() || submitted}
-              className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-5 py-2 bg-cyan-400 hover:bg-cyan-300 text-white rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {submitted ? "Answer Submitted" : "Submit Answer"}
+              {evaluating
+                ? "Evaluating..."
+                : submitted
+                  ? "Answer Submitted"
+                  : "Submit Answer"}
             </button>
 
             <button
               onClick={previousQuestion}
               disabled={currentIndex === 0}
-              className="px-5 py-2 bg-gray-200 rounded-lg disabled:opacity-50"
+              className="px-5 py-2 bg-[#0b1018]/10 rounded-lg disabled:opacity-50"
             >
               ← Previous
             </button>
@@ -2750,7 +3408,7 @@ function InterviewPage({ student }) {
               <button
                 onClick={nextQuestion}
                 disabled={!submitted}
-                className="px-5 py-2 bg-gray-200 rounded-lg disabled:opacity-50"
+                className="px-5 py-2 bg-[#0b1018]/10 rounded-lg disabled:opacity-50"
               >
                 Next →
               </button>
@@ -2764,6 +3422,41 @@ function InterviewPage({ student }) {
             </div>
           )}
 
+          {evaluation && (
+            <div className="mt-5 rounded-xl border bg-[#05070d] p-5">
+              <h4 className="text-lg font-bold text-slate-800">
+                🧠 Interview Feedback
+              </h4>
+
+              <div className="mt-4">
+                <p className="text-sm text-slate-400">
+                  Answer Score
+                </p>
+
+                <p className="text-3xl font-bold text-cyan-300">
+                  {evaluation.score}/100
+                </p>
+              </div>
+
+              <div className="mt-4">
+                <p className="font-semibold text-slate-200">
+                  Feedback
+                </p>
+
+                <ul className="mt-2 space-y-2">
+                  {evaluation.feedback.map((item, index) => (
+                    <li
+                      key={index}
+                      className="rounded-lg bg-[#0b1018] p-3 text-sm text-slate-200 border"
+                    >
+                      • {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
           {submitted && currentIndex === questions.length - 1 && (
             <div className="mt-4 bg-blue-50 text-blue-700 rounded-xl p-4 font-semibold">
               🎉 You've answered all interview questions!
@@ -2772,6 +3465,83 @@ function InterviewPage({ student }) {
 
         </div>
 
+        {interviewStats && (
+          <div className="mt-6 rounded-2xl border bg-[#0b1018] p-6 shadow-sm">
+            <h3 className="text-xl font-bold">
+              📊 Interview Performance
+            </h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5">
+
+              <div className="rounded-xl bg-blue-50 p-4">
+                <p className="text-sm text-slate-400">
+                  Questions Attempted
+                </p>
+
+                <p className="text-2xl font-bold text-cyan-300">
+                  {interviewStats.attempted}
+                </p>
+              </div>
+
+              <div className="rounded-xl bg-green-50 p-4">
+                <p className="text-sm text-slate-400">
+                  Average Score
+                </p>
+
+                <p className="text-2xl font-bold text-green-600">
+                  {interviewStats.average_score}
+                </p>
+              </div>
+
+              <div className="rounded-xl bg-purple-50 p-4">
+                <p className="text-sm text-slate-400">
+                  Performance
+                </p>
+
+                <p className="text-2xl font-bold text-purple-600">
+                  {interviewStats.average_score >= 80
+                    ? "Excellent"
+                    : interviewStats.average_score >= 60
+                      ? "Good"
+                      : "Needs Improvement"}
+                </p>
+              </div>
+
+            </div>
+          </div>
+        )}
+
+        {interviewRecommendations.length > 0 && (
+          <div className="mt-6 rounded-2xl border bg-[#0b1018] p-6 shadow-sm">
+            <h3 className="text-xl font-bold">
+              🚀 How to Improve
+            </h3>
+
+            <p className="mt-1 text-sm text-slate-400">
+              Personalized suggestions based on your interview performance.
+            </p>
+
+            <div className="mt-4 space-y-3">
+              {interviewRecommendations.map(
+                (recommendation, index) => (
+                  <div
+                    key={index}
+                    className="flex gap-3 rounded-xl bg-blue-50 p-4"
+                  >
+                    <span className="font-bold text-cyan-300">
+                      {index + 1}.
+                    </span>
+
+                    <p className="text-sm text-slate-200">
+                      {recommendation}
+                    </p>
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+        )}
+
       </div>
     </section>
   );
@@ -2779,10 +3549,16 @@ function InterviewPage({ student }) {
 
 
 /* Companies Page */
-function CompaniesPage() {
+function CompaniesPage({ student }) {
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [selectedCompany, setSelectedCompany] = useState(null);
+  const [preparation, setPreparation] = useState(null);
+  const [preparationLoading, setPreparationLoading] = useState(false);
+  const [completedSkills, setCompletedSkills] = useState([]);
+  const [matchData, setMatchData] = useState({});
+  const [matchLoading, setMatchLoading] = useState({});
 
   useEffect(() => {
     const loadCompanies = async () => {
@@ -2818,11 +3594,166 @@ function CompaniesPage() {
     );
   });
 
+  const loadPreparation = async (companyId) => {
+    setPreparationLoading(true);
+
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/companies/${companyId}/preparation`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Could not load preparation"
+        );
+      }
+
+      setSelectedCompany(companyId);
+      setPreparation(data);
+
+      const progressResponse = await apiFetch(
+        `${API_BASE}/companies/${companyId}/preparation/progress?student_id=${student.id}`
+      );
+
+      const progressData = await progressResponse.json();
+
+      if (progressResponse.ok) {
+        setCompletedSkills(
+          progressData.completed_skills || []
+        );
+      } else {
+        setCompletedSkills([]);
+      }
+    } catch (error) {
+      console.error(error);
+      alert(error.message);
+    } finally {
+      setPreparationLoading(false);
+    }
+  };
+
+  const toggleSkill = async (skill) => {
+    if (!selectedCompany || !student?.id) {
+      return;
+    }
+
+    const isCompleted = completedSkills.includes(skill);
+
+    setCompletedSkills((previous) => {
+      if (isCompleted) {
+        return previous.filter((item) => item !== skill);
+      }
+
+      return [...previous, skill];
+    });
+
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/companies/${selectedCompany}/preparation/${encodeURIComponent(skill)}?completed=${!isCompleted}&student_id=${student.id}`,
+        {
+          method: "PUT",
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Could not update preparation"
+        );
+      }
+    } catch (error) {
+      console.error(error);
+
+      // Roll back UI if database update fails
+      setCompletedSkills((previous) => {
+        if (isCompleted) {
+          return [...previous, skill];
+        }
+
+        return previous.filter((item) => item !== skill);
+      });
+
+      alert(error.message);
+    }
+  };
+
+  const totalSkills = preparation?.checklist?.length || 0;
+
+  const preparationProgress =
+    totalSkills > 0
+      ? Math.round((completedSkills.length / totalSkills) * 100)
+      : 0;
+
+  const loadCompanyMatch = async (companyId) => {
+    if (!student?.id) return;
+
+    setMatchLoading((prev) => ({
+      ...prev,
+      [companyId]: true,
+    }));
+
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/companies/${companyId}/match?student_id=${student.id}`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Failed to calculate company match"
+        );
+      }
+
+      setMatchData((prev) => ({
+        ...prev,
+        [companyId]: data,
+      }));
+    } catch (error) {
+      console.error("Company match error:", error);
+      alert(error.message);
+    } finally {
+      setMatchLoading((prev) => ({
+        ...prev,
+        [companyId]: false,
+      }));
+    }
+  };
+
+  useEffect(() => {
+    if (!companies.length || !student?.id) return;
+
+    companies.forEach((company) => {
+      if (!matchData[company.id]) {
+        loadCompanyMatch(company.id);
+      }
+    });
+  }, [companies, student?.id]);
+
+  const getMatchLevel = (score) => {
+    if (score >= 80) {
+      return "Excellent Match";
+    }
+
+    if (score >= 60) {
+      return "Good Match";
+    }
+
+    if (score >= 40) {
+      return "Moderate Match";
+    }
+
+    return "Needs Improvement";
+  };
+
   if (loading) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-5xl mx-auto">
-          <p className="text-slate-500">
+          <p className="text-slate-400">
             Loading companies...
           </p>
         </div>
@@ -2839,7 +3770,7 @@ function CompaniesPage() {
             🏢 Companies
           </h2>
 
-          <p className="text-slate-500 mt-1">
+          <p className="text-slate-400 mt-1">
             Explore companies that hire for your target role.
           </p>
         </div>
@@ -2849,11 +3780,11 @@ function CompaniesPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search company, role, or skill..."
-          className="w-full border border-slate-300 rounded-lg px-4 py-3 mb-6"
+          className="w-full border border-white/10 rounded-lg px-4 py-3 mb-6"
         />
 
         {filteredCompanies.length === 0 ? (
-          <div className="bg-white rounded-2xl border shadow-sm p-6 text-center text-slate-500">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6 text-center text-slate-400">
             No companies match your search.
           </div>
         ) : (
@@ -2861,39 +3792,345 @@ function CompaniesPage() {
             {filteredCompanies.map((company) => (
               <div
                 key={company.id}
-                className="bg-white rounded-2xl border shadow-sm p-6"
+                className="bg-[#0b1018] rounded-2xl border shadow-sm p-6"
               >
                 <div className="flex justify-between items-start mb-3">
                   <h3 className="text-lg font-bold">
                     {company.name}
                   </h3>
 
-                  <span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-semibold">
+                  <span className="px-3 py-1 rounded-full bg-cyan-400/10 text-blue-700 text-xs font-semibold">
                     {company.package}
                   </span>
                 </div>
 
-                <p className="text-slate-600 font-medium mb-3">
+                <p className="text-slate-300 font-medium mb-3">
                   {company.role}
                 </p>
 
                 <div className="space-y-2 text-sm">
-                  <p className="text-slate-500">
-                    <span className="font-semibold text-slate-700">
+                  <p className="text-slate-400">
+                    <span className="font-semibold text-slate-200">
                       Eligibility:
                     </span>{" "}
                     {company.eligibility}
                   </p>
 
-                  <p className="text-slate-500">
-                    <span className="font-semibold text-slate-700">
+                  <p className="text-slate-400">
+                    <span className="font-semibold text-slate-200">
                       Skills:
                     </span>{" "}
                     {company.skills}
                   </p>
                 </div>
+
+                <button
+                  onClick={() => loadCompanyMatch(company.id)}
+                  className="mt-4 w-full rounded-lg bg-cyan-400 px-4 py-2 text-white hover:bg-cyan-300"
+                >
+                  {matchLoading[company.id]
+                    ? "Calculating..."
+                    : "Check Match Score"}
+                </button>
+
+                {matchLoading[company.id] && (
+                  <div className="mt-4 rounded-lg border p-4 text-center text-sm text-slate-400">
+                    Calculating match...
+                  </div>
+                )}
+
+                {matchData[company.id] && (
+                  <div className="mt-4 rounded-xl border p-4">
+
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-slate-400">
+                          Your Match Score
+                        </p>
+
+                        <p className="text-3xl font-bold">
+                          {matchData[company.id].match_score}%
+                        </p>
+
+                        <p className="mt-1 text-sm font-medium">
+                          {getMatchLevel(
+                            matchData[company.id].match_score
+                          )}
+                        </p>
+                      </div>
+
+                      <div className="text-right">
+                        <p className="text-sm">
+                          {matchData[company.id].eligible
+                            ? "✅ Eligible"
+                            : "❌ Not Eligible"}
+                        </p>
+
+                        <p className="mt-2 text-sm text-slate-400">
+                          {matchData[company.id].matched_skills?.length || 0}
+                          {" "}skills matched
+                        </p>
+                      </div>
+                    </div>
+
+                    {matchData[company.id].matched_skills?.length > 0 && (
+                      <div className="mt-3">
+                        <p className="font-medium text-sm">
+                          Matched Skills
+                        </p>
+
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {matchData[company.id].matched_skills.map(
+                            (skill) => (
+                              <span
+                                key={skill}
+                                className="rounded-full bg-green-100 px-3 py-1 text-sm"
+                              >
+                                ✅ {skill}
+                              </span>
+                            )
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {matchData[company.id].missing_skills?.length > 0 && (
+                      <div className="mt-3">
+                        <p className="font-medium text-sm">
+                          Missing Skills
+                        </p>
+
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {matchData[company.id].missing_skills.map(
+                            (skill) => (
+                              <span
+                                key={skill}
+                                className="rounded-full bg-red-100 px-3 py-1 text-sm"
+                              >
+                                ⚠️ {skill}
+                              </span>
+                            )
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mt-3">
+                      <p className="font-medium text-sm">
+                        Recommendations
+                      </p>
+
+                      <ul className="mt-2 list-disc pl-5 text-sm">
+                        {matchData[company.id].recommendations.map(
+                          (recommendation, index) => (
+                            <li key={index}>
+                              {recommendation}
+                            </li>
+                          )
+                        )}
+                      </ul>
+                    </div>
+
+                  </div>
+                )}
+
+                <button
+                  onClick={() => loadPreparation(company.id)}
+                  className="mt-5 w-full rounded-lg bg-cyan-400 px-4 py-2.5 font-semibold text-white hover:bg-cyan-300"
+                >
+                  📚 View Preparation
+                </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {preparationLoading && (
+          <div className="mt-6 rounded-2xl border bg-[#0b1018] p-6 shadow-sm">
+            <p className="text-slate-400">
+              Loading preparation plan...
+            </p>
+          </div>
+        )}
+
+        {preparation && !preparationLoading && (
+          <div className="mt-6 rounded-2xl border bg-[#0b1018] p-6 shadow-sm">
+
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-2xl font-bold">
+                  🎯 {preparation.company} Preparation
+                </h3>
+
+                <p className="mt-1 text-slate-400">
+                  Target Role: {preparation.role}
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  setPreparation(null);
+                  setSelectedCompany(null);
+                  setCompletedSkills([]);
+                }}
+                className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold hover:bg-slate-200"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-6">
+              <div className="flex items-center justify-between text-sm font-semibold text-slate-200">
+                <span>Preparation Progress</span>
+                <span>{preparationProgress}%</span>
+              </div>
+
+              <div className="mt-2 h-2 w-full rounded-full bg-slate-200">
+                <div
+                  className="h-2 rounded-full bg-cyan-400"
+                  style={{ width: `${preparationProgress}%` }}
+                />
+              </div>
+
+              <div className="mt-2 text-sm text-slate-400">
+                {completedSkills.length} / {totalSkills} skills completed
+              </div>
+
+              <div className="mt-3">
+                {preparationProgress === 100 ? (
+                  <span className="inline-flex rounded-full bg-green-100 px-3 py-1 text-sm font-semibold text-green-700">
+                    🟢 Fully Prepared
+                  </span>
+                ) : preparationProgress >= 60 ? (
+                  <span className="inline-flex rounded-full bg-yellow-100 px-3 py-1 text-sm font-semibold text-yellow-700">
+                    🟡 Good Progress
+                  </span>
+                ) : (
+                  <span className="inline-flex rounded-full bg-red-100 px-3 py-1 text-sm font-semibold text-red-700">
+                    🔴 Keep Preparing
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-5 rounded-xl bg-[#05070d] p-4">
+                <p className="text-sm font-semibold text-slate-200">
+                  Preparation Summary
+                </p>
+
+                <p className="mt-1 text-sm text-slate-400">
+                  Complete the skills above to improve your readiness
+                  for {preparation.company}.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+
+              <div className="rounded-xl bg-blue-50 p-5">
+                <h4 className="font-bold text-blue-700">
+                  💻 Coding Focus
+                </h4>
+
+                <ul className="mt-3 space-y-2">
+                  {preparation.coding_focus.length > 0 ? (
+                    preparation.coding_focus.map((skill) => (
+                      <li
+                        key={skill}
+                        className="text-sm text-slate-200"
+                      >
+                        • {skill}
+                      </li>
+                    ))
+                  ) : (
+                    <li className="text-sm text-slate-400">
+                      No specific coding focus
+                    </li>
+                  )}
+                </ul>
+              </div>
+
+              <div className="rounded-xl bg-green-50 p-5">
+                <h4 className="font-bold text-green-700">
+                  🧠 Aptitude Focus
+                </h4>
+
+                <ul className="mt-3 space-y-2">
+                  {preparation.aptitude_focus.length > 0 ? (
+                    preparation.aptitude_focus.map((skill) => (
+                      <li
+                        key={skill}
+                        className="text-sm text-slate-200"
+                      >
+                        • {skill}
+                      </li>
+                    ))
+                  ) : (
+                    <li className="text-sm text-slate-400">
+                      No specific aptitude focus
+                    </li>
+                  )}
+                </ul>
+              </div>
+
+              <div className="rounded-xl bg-purple-50 p-5">
+                <h4 className="font-bold text-purple-700">
+                  🎤 Interview Focus
+                </h4>
+
+                <ul className="mt-3 space-y-2">
+                  {preparation.interview_focus.length > 0 ? (
+                    preparation.interview_focus.map((skill) => (
+                      <li
+                        key={skill}
+                        className="text-sm text-slate-200"
+                      >
+                        • {skill}
+                      </li>
+                    ))
+                  ) : (
+                    <li className="text-sm text-slate-400">
+                      No specific interview focus
+                    </li>
+                  )}
+                </ul>
+              </div>
+
+            </div>
+
+            <div className="mt-6">
+              <h4 className="text-lg font-bold">
+                ✅ Preparation Checklist
+              </h4>
+
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {preparation.checklist.map((item) => {
+                  const isCompleted = completedSkills.includes(item.skill);
+
+                  return (
+                    <button
+                      key={item.skill}
+                      onClick={() => toggleSkill(item.skill)}
+                      className={`text-left rounded-lg border p-3 transition ${
+                        isCompleted
+                          ? "bg-green-50 border-green-200"
+                          : "bg-[#05070d] hover:bg-slate-100"
+                      }`}
+                    >
+                      <span
+                        className={`text-sm font-medium ${
+                          isCompleted
+                            ? "text-green-700 line-through"
+                            : "text-slate-200"
+                        }`}
+                      >
+                        {isCompleted ? "☑" : "☐"} {item.skill}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
           </div>
         )}
 
@@ -3034,8 +4271,8 @@ function ProjectsPage({ student }) {
   };
 
   const statusColors = {
-    "Not Started": "bg-gray-100 text-gray-700",
-    "In Progress": "bg-blue-100 text-blue-700",
+    "Not Started": "bg-[#0b1018]/[0.06] text-slate-200",
+    "In Progress": "bg-cyan-400/10 text-blue-700",
     "Completed": "bg-green-100 text-green-700",
   };
 
@@ -3043,7 +4280,7 @@ function ProjectsPage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-4xl mx-auto">
-          <p className="text-slate-500">
+          <p className="text-slate-400">
             Loading projects...
           </p>
         </div>
@@ -3061,7 +4298,7 @@ function ProjectsPage({ student }) {
               🏗️ Projects
             </h2>
 
-            <p className="text-slate-500 mt-1">
+            <p className="text-slate-400 mt-1">
               Track the projects you're building for placements.
             </p>
           </div>
@@ -3069,7 +4306,7 @@ function ProjectsPage({ student }) {
           {!showForm && (
             <button
               onClick={() => setShowForm(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg font-semibold"
+              className="bg-cyan-400 hover:bg-cyan-300 text-white px-5 py-2 rounded-lg font-semibold"
             >
               + Add Project
             </button>
@@ -3077,7 +4314,7 @@ function ProjectsPage({ student }) {
         </div>
 
         {showForm && (
-          <div className="bg-white rounded-2xl border shadow-sm p-6 mb-6">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6 mb-6">
 
             <h3 className="text-lg font-bold mb-4">
               {editingId ? "Edit Project" : "New Project"}
@@ -3086,31 +4323,31 @@ function ProjectsPage({ student }) {
             <div className="space-y-4">
 
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
+                <label className="block text-sm font-medium text-slate-300 mb-1">
                   Project Name
                 </label>
                 <input
                   name="name"
                   value={form.name}
                   onChange={handleChange}
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2"
+                  className="w-full border border-white/10 rounded-lg px-4 py-2"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
+                <label className="block text-sm font-medium text-slate-300 mb-1">
                   Description
                 </label>
                 <textarea
                   name="description"
                   value={form.description}
                   onChange={handleChange}
-                  className="w-full min-h-24 border border-slate-300 rounded-lg px-4 py-2"
+                  className="w-full min-h-24 border border-white/10 rounded-lg px-4 py-2"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
+                <label className="block text-sm font-medium text-slate-300 mb-1">
                   Technologies
                 </label>
                 <input
@@ -3118,19 +4355,19 @@ function ProjectsPage({ student }) {
                   value={form.technology}
                   onChange={handleChange}
                   placeholder="React, FastAPI, PostgreSQL"
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2"
+                  className="w-full border border-white/10 rounded-lg px-4 py-2"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1">
+                <label className="block text-sm font-medium text-slate-300 mb-1">
                   Status
                 </label>
                 <select
                   name="status"
                   value={form.status}
                   onChange={handleChange}
-                  className="w-full border border-slate-300 rounded-lg px-4 py-2"
+                  className="w-full border border-white/10 rounded-lg px-4 py-2"
                 >
                   <option value="Not Started">Not Started</option>
                   <option value="In Progress">In Progress</option>
@@ -3160,7 +4397,7 @@ function ProjectsPage({ student }) {
         )}
 
         {projects.length === 0 ? (
-          <div className="bg-white rounded-2xl border shadow-sm p-8 text-center text-slate-500">
+          <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-8 text-center text-slate-400">
             No projects added yet.
           </div>
         ) : (
@@ -3168,7 +4405,7 @@ function ProjectsPage({ student }) {
             {projects.map((project) => (
               <div
                 key={project.id}
-                className="bg-white rounded-2xl border shadow-sm p-6"
+                className="bg-[#0b1018] rounded-2xl border shadow-sm p-6"
               >
                 <div className="flex justify-between items-start mb-2">
                   <h3 className="text-lg font-bold">
@@ -3177,7 +4414,7 @@ function ProjectsPage({ student }) {
 
                   <span
                     className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                      statusColors[project.status] || "bg-gray-100 text-gray-700"
+                      statusColors[project.status] || "bg-[#0b1018]/[0.06] text-slate-200"
                     }`}
                   >
                     {project.status}
@@ -3185,13 +4422,13 @@ function ProjectsPage({ student }) {
                 </div>
 
                 {project.description && (
-                  <p className="text-slate-600 mb-2">
+                  <p className="text-slate-300 mb-2">
                     {project.description}
                   </p>
                 )}
 
                 {project.technology && (
-                  <p className="text-sm text-slate-500 mb-4">
+                  <p className="text-sm text-slate-400 mb-4">
                     {project.technology}
                   </p>
                 )}
@@ -3199,7 +4436,7 @@ function ProjectsPage({ student }) {
                 <div className="flex gap-3">
                   <button
                     onClick={() => startEdit(project)}
-                    className="text-sm px-4 py-1.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100"
+                    className="text-sm px-4 py-1.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-cyan-400/10"
                   >
                     Edit
                   </button>
@@ -3226,6 +4463,38 @@ function ProjectsPage({ student }) {
 function ProgressPage({ student }) {
   const [progress, setProgress] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [skillGap, setSkillGap] = useState(null);
+  const [skillGapLoading, setSkillGapLoading] = useState(false);
+
+  useEffect(() => {
+    const loadSkillGap = async () => {
+      if (!student?.id) return;
+
+      setSkillGapLoading(true);
+
+      try {
+        const response = await apiFetch(
+          `${API_BASE}/students/${student.id}/skill-gap`
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail || "Failed to load skill gap"
+          );
+        }
+
+        setSkillGap(data);
+      } catch (error) {
+        console.error("Skill gap error:", error);
+      } finally {
+        setSkillGapLoading(false);
+      }
+    };
+
+    loadSkillGap();
+  }, [student?.id]);
 
   useEffect(() => {
     if (!student?.id) return;
@@ -3246,7 +4515,7 @@ function ProgressPage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-5xl mx-auto">
-          <p className="text-slate-500">
+          <p className="text-slate-400">
             Loading progress...
           </p>
         </div>
@@ -3258,7 +4527,7 @@ function ProgressPage({ student }) {
     return (
       <section className="p-4 sm:p-6">
         <div className="max-w-5xl mx-auto">
-          <p className="text-slate-500">
+          <p className="text-slate-400">
             Unable to load progress.
           </p>
         </div>
@@ -3282,23 +4551,23 @@ function ProgressPage({ student }) {
             📈 Progress
           </h2>
 
-          <p className="text-slate-500 mt-1">
+          <p className="text-slate-400 mt-1">
             Track your placement preparation progress.
           </p>
         </div>
 
         {/* Readiness Score */}
-        <div className="bg-white rounded-2xl border shadow-sm p-6 text-center">
+        <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6 text-center">
 
           <h3 className="text-lg font-bold">
             Placement Readiness
           </h3>
 
-          <div className="text-5xl font-bold mt-4 text-blue-600">
+          <div className="text-5xl font-bold mt-4 text-cyan-300">
             {progress.readiness_score}%
           </div>
 
-          <p className="mt-2 text-slate-500">
+          <p className="mt-2 text-slate-400">
             {getLevel(progress.readiness_score)}
           </p>
 
@@ -3311,23 +4580,24 @@ function ProgressPage({ student }) {
           <ProgressCard title="Coding" score={progress.coding_score} />
           <ProgressCard title="Aptitude" score={progress.aptitude_score} />
           <ProgressCard title="Projects" score={progress.project_score} />
+          <ProgressCard title="Interview" score={progress.interview_score} />
 
         </div>
 
         {/* Interview */}
-        <div className="bg-white rounded-2xl border shadow-sm p-6">
+        <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
 
           <h3 className="text-lg font-bold">
             Interview Preparation
           </h3>
 
-          <p className="mt-2 text-slate-600">
+          <p className="mt-2 text-slate-300">
             {progress.interview_attempted} / {progress.interview_total} questions answered
           </p>
 
-          <div className="w-full bg-gray-200 rounded-full h-3 mt-4">
+          <div className="w-full bg-[#0b1018]/10 rounded-full h-3 mt-4">
             <div
-              className="bg-blue-600 h-3 rounded-full"
+              className="bg-cyan-400 h-3 rounded-full"
               style={{
                 width:
                   progress.interview_total > 0
@@ -3345,23 +4615,128 @@ function ProgressPage({ student }) {
         </div>
 
         {/* Projects */}
-        <div className="bg-white rounded-2xl border shadow-sm p-6">
+        <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
 
           <h3 className="text-lg font-bold">
             Completed Projects
           </h3>
 
-          <p className="text-3xl font-bold mt-3 text-blue-600">
+          <p className="text-3xl font-bold mt-3 text-cyan-300">
             {progress.completed_projects}
           </p>
 
-          <p className="text-slate-500">
+          <p className="text-slate-400">
             Completed projects
           </p>
 
         </div>
 
       </div>
+
+      {/* Skill Gap Analyzer */}
+      <div className="rounded-2xl border bg-[#0b1018] p-6 shadow-sm">
+
+          <div className="mb-5">
+            <h2 className="text-xl font-bold">
+              🧠 Skill Gap Analyzer
+            </h2>
+
+            <p className="text-sm text-slate-400">
+              Skills required for your target role:
+              {" "}
+              {skillGap?.target_role || student?.target_role}
+            </p>
+          </div>
+
+          {skillGapLoading ? (
+            <p className="text-slate-400">
+              Analyzing your skill gaps...
+            </p>
+          ) : skillGap ? (
+            <>
+              <div className="mb-5 grid grid-cols-3 gap-4">
+
+                <div className="rounded-xl border p-4">
+                  <p className="text-sm text-slate-400">
+                    Required
+                  </p>
+                  <p className="text-2xl font-bold">
+                    {skillGap.total_required}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border p-4">
+                  <p className="text-sm text-slate-400">
+                    Matched
+                  </p>
+                  <p className="text-2xl font-bold">
+                    {skillGap.total_matched}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border p-4">
+                  <p className="text-sm text-slate-400">
+                    Missing
+                  </p>
+                  <p className="text-2xl font-bold">
+                    {skillGap.total_missing}
+                  </p>
+                </div>
+
+              </div>
+
+              {skillGap.matched_skills?.length > 0 && (
+                <div className="mb-5">
+                  <h3 className="font-semibold">
+                    ✅ Matched Skills
+                  </h3>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {skillGap.matched_skills.map((skill) => (
+                      <span
+                        key={skill}
+                        className="rounded-full bg-green-100 px-3 py-1 text-sm"
+                      >
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {skillGap.skill_gaps?.length > 0 && (
+                <div>
+                  <h3 className="font-semibold">
+                    ⚠️ Skills to Improve
+                  </h3>
+
+                  <div className="mt-3 space-y-3">
+                    {skillGap.skill_gaps.map((gap) => (
+                      <div
+                        key={gap.skill}
+                        className="flex items-center justify-between rounded-xl border p-3"
+                      >
+                        <span className="font-medium">
+                          {gap.skill}
+                        </span>
+
+                        <span className="rounded-full bg-slate-100 px-3 py-1 text-sm">
+                          {gap.priority}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </>
+          ) : (
+            <p className="text-slate-400">
+              Skill gap information is not available yet.
+            </p>
+          )}
+
+        </div>
     </section>
   );
 }
@@ -3370,7 +4745,7 @@ function ProgressPage({ student }) {
 /* Progress Card */
 function ProgressCard({ title, score }) {
   return (
-    <div className="bg-white rounded-2xl border shadow-sm p-5">
+    <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-5">
 
       <h3 className="font-semibold">
         {title}
@@ -3380,9 +4755,9 @@ function ProgressCard({ title, score }) {
         {score}%
       </div>
 
-      <div className="w-full bg-gray-200 rounded-full h-2 mt-4">
+      <div className="w-full bg-[#0b1018]/10 rounded-full h-2 mt-4">
         <div
-          className="bg-blue-600 h-2 rounded-full"
+          className="bg-cyan-400 h-2 rounded-full"
           style={{ width: `${score}%` }}
         />
       </div>
@@ -3482,7 +4857,7 @@ function ProfilePage({ student, setStudent }) {
             Profile
           </h2>
 
-          <p className="text-slate-500 mt-1">
+          <p className="text-slate-400 mt-1">
             Manage your academic and placement information.
           </p>
         </div>
@@ -3493,7 +4868,7 @@ function ProfilePage({ student, setStudent }) {
           </div>
         )}
 
-        <div className="bg-white rounded-2xl border shadow-sm p-6">
+        <div className="bg-[#0b1018] rounded-2xl border shadow-sm p-6">
 
           <div className="flex justify-between items-center mb-6">
 
@@ -3507,7 +4882,7 @@ function ProfilePage({ student, setStudent }) {
                   setEditing(true);
                   setMessage("");
                 }}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg"
+                className="bg-cyan-400 hover:bg-cyan-300 text-white px-5 py-2 rounded-lg"
               >
                 Edit Profile
               </button>
@@ -3521,7 +4896,7 @@ function ProfilePage({ student, setStudent }) {
 
               <div key={key}>
 
-                <label className="block text-sm font-medium text-slate-600 mb-1">
+                <label className="block text-sm font-medium text-slate-300 mb-1">
                   {label}
                 </label>
 
@@ -3532,10 +4907,10 @@ function ProfilePage({ student, setStudent }) {
                     onChange={handleChange}
                     type={key === "cgpa" ? "number" : "text"}
                     step={key === "cgpa" ? "0.01" : undefined}
-                    className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full border border-white/10 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 ) : (
-                  <div className="bg-slate-50 rounded-lg px-4 py-2">
+                  <div className="bg-[#05070d] rounded-lg px-4 py-2">
                     {student[key]}
                   </div>
                 )}
@@ -3583,12 +4958,12 @@ function ProfilePage({ student, setStudent }) {
 /* Stat Card */
 function StatCard({ title, value, icon, subtitle }) {
   return (
-    <div className="bg-white rounded-2xl p-5 border shadow-sm hover:shadow-md transition">
+    <div className="bg-[#0b1018] rounded-2xl p-5 border shadow-sm hover:shadow-md transition">
 
       <div className="flex justify-between items-start">
 
         <div>
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-slate-400">
             {title}
           </p>
 
@@ -3603,7 +4978,7 @@ function StatCard({ title, value, icon, subtitle }) {
 
       </div>
 
-      <p className="text-xs text-slate-500 mt-3">
+      <p className="text-xs text-slate-400 mt-3">
         {subtitle}
       </p>
 
@@ -3615,13 +4990,13 @@ function StatCard({ title, value, icon, subtitle }) {
 /* Task */
 function Task({ text, completed = false }) {
   return (
-    <div className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-50">
+    <div className="flex items-center gap-3 p-3 rounded-lg hover:bg-[#05070d]">
 
       <div
         className={`w-5 h-5 rounded border flex items-center justify-center ${
           completed
-            ? "bg-blue-600 border-blue-600 text-white"
-            : "border-slate-300"
+            ? "bg-cyan-400 border-blue-600 text-white"
+            : "border-white/10"
         }`}
       >
         {completed && "✓"}
@@ -3631,7 +5006,7 @@ function Task({ text, completed = false }) {
         className={
           completed
             ? "text-slate-400 line-through"
-            : "text-slate-700"
+            : "text-slate-200"
         }
       >
         {text}
@@ -3654,7 +5029,7 @@ function Progress({ name, value }) {
 
       <div className="h-2 bg-slate-100 rounded-full">
         <div
-          className="h-2 bg-blue-600 rounded-full"
+          className="h-2 bg-cyan-400 rounded-full"
           style={{ width: value }}
         ></div>
       </div>
