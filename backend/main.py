@@ -9,12 +9,18 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import create_engine, Column, Integer, String, Float, Text, func
 from sqlalchemy.orm import declarative_base, sessionmaker
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from docx import Document
 import bcrypt
 import json
+import re
 from jose import JWTError, jwt
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 load_dotenv(
     dotenv_path=Path(__file__).with_name(".env")
@@ -35,6 +41,77 @@ SessionLocal = sessionmaker(
 )
 
 Base = declarative_base()
+
+# --------------------------------------------------------------------
+# Step 44.12 — Real AI service configuration
+#
+# openai_client stays None if the "openai" package isn't installed or
+# OPENAI_API_KEY isn't set, so every real-AI function below falls back
+# to the existing rule-based logic instead of crashing the app.
+# --------------------------------------------------------------------
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+openai_client = None
+
+if OpenAI and OPENAI_API_KEY:
+    try:
+        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    except Exception as error:
+        print(f"OpenAI client initialization error: {error}")
+        openai_client = None
+
+
+def parse_ai_json(text):
+    """
+    Best-effort parse of an AI response into a dict.
+
+    Some AI responses are plain prose (fine, callers fall back to that),
+    some are clean JSON, and some are JSON wrapped in extra prose/markdown
+    fences. This tries all three before giving up, so a malformed or
+    partial AI response never gets passed to the frontend as if it were
+    valid structured data.
+    """
+    if not text:
+        return None
+
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+    return None
+
+
+# --------------------------------------------------------------------
+# Step 44.42 — Simple in-memory AI response cache.
+#
+# This is a temporary, per-process optimization to avoid calling the
+# paid AI API every time the same data is requested again with no
+# underlying change. It resets whenever the server restarts/redeploys;
+# a production setup should replace this with PostgreSQL or Redis.
+# --------------------------------------------------------------------
+
+AI_CACHE = {}
+
+
+def get_ai_cache(key):
+    return AI_CACHE.get(key)
+
+
+def set_ai_cache(key, value):
+    AI_CACHE[key] = value
 
 # --------------------------------------------------------------------
 # Step 17 — Password hashing + JWT authentication config
@@ -654,9 +731,137 @@ def keyword_score(text, keywords, max_score):
     return round(score)
 
 
+def extract_resume_profile(text: str):
+    lowered = text.lower()
+
+    profile = {
+        "projects": [],
+        "certifications": [],
+        "experience": [],
+        "education": [],
+    }
+
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
+
+    current_section = None
+
+    section_map = {
+        "project": "projects",
+        "projects": "projects",
+        "certification": "certifications",
+        "certifications": "certifications",
+        "experience": "experience",
+        "work experience": "experience",
+        "education": "education",
+    }
+
+    for line in lines:
+        normalized = line.lower().strip(":- ")
+
+        matched_section = None
+
+        for section_name, section_key in section_map.items():
+            if normalized == section_name:
+                matched_section = section_key
+                break
+
+        if matched_section:
+            current_section = matched_section
+            continue
+
+        if current_section:
+            profile[current_section].append(line)
+
+    return profile
+
+
+def detect_resume_skills(text: str, role_skills: list):
+    lowered = text.lower()
+
+    detected = []
+    missing = []
+
+    skill_variants = {
+        "oop": [
+            "oop",
+            "oops",
+            "object oriented programming",
+            "object-oriented programming"
+        ],
+
+        "javascript": [
+            "javascript",
+            "java script",
+            "js"
+        ],
+
+        "react": [
+            "react",
+            "reactjs",
+            "react.js"
+        ],
+
+        "node.js": [
+            "node.js",
+            "nodejs",
+            "node js"
+        ],
+
+        "postgresql": [
+            "postgresql",
+            "postgres",
+            "postgres sql"
+        ],
+
+        "dsa": [
+            "dsa",
+            "data structures",
+            "data structures and algorithms"
+        ],
+
+        "rest api": [
+            "rest api",
+            "restful api",
+            "rest"
+        ],
+
+        "machine learning": [
+            "machine learning",
+            "machine-learning",
+            "ml"
+        ],
+    }
+
+    for skill in role_skills:
+        canonical = normalize_skill(skill)
+
+        variants = skill_variants.get(
+            canonical,
+            [canonical]
+        )
+
+        found = any(
+            variant in lowered
+            for variant in variants
+        )
+
+        if found:
+            detected.append(skill)
+        else:
+            missing.append(skill)
+
+    return detected, missing
+
+
 def analyze_resume_text(text: str, target_role: str = "Software Developer"):
 
     lowered = text.lower()
+
+    profile = extract_resume_profile(text)
 
     role_key = target_role.lower().strip()
 
@@ -671,15 +876,7 @@ def analyze_resume_text(text: str, target_role: str = "Software Developer"):
     # 1. SKILLS - 25%
     # --------------------------------
 
-    strengths = [
-        skill for skill in core_skills
-        if skill.lower() in lowered
-    ]
-
-    missing_skills = [
-        skill for skill in core_skills
-        if skill not in strengths
-    ]
+    strengths, missing_skills = detect_resume_skills(text, core_skills)
 
     skills_score = round(
         (len(strengths) / len(core_skills)) * 25
@@ -911,8 +1108,80 @@ def analyze_resume_text(text: str, target_role: str = "Software Developer"):
             for skill in missing_skills
         ],
 
-        "suggestions": suggestions
+        "suggestions": suggestions,
+
+        "profile": profile,
+
+        "ai_recommendations": generate_ai_style_resume_recommendations(
+            profile,
+            strengths_list,
+            missing_skills,
+            target_role
+        )
     }
+
+
+def generate_ai_style_resume_recommendations(
+    profile,
+    strengths,
+    missing_skills,
+    target_role
+):
+    recommendations = []
+
+    # Skill recommendations
+    if missing_skills:
+        recommendations.append(
+            f"For the {target_role} role, focus on learning: "
+            + ", ".join(missing_skills[:5])
+            + "."
+        )
+
+    # Project recommendations
+    if len(profile.get("projects", [])) == 0:
+        recommendations.append(
+            "Add at least 2 practical projects related to your target role."
+        )
+    elif len(profile.get("projects", [])) < 2:
+        recommendations.append(
+            "Consider adding one more role-relevant project to strengthen your resume."
+        )
+
+    # Certification recommendations
+    if len(profile.get("certifications", [])) == 0:
+        recommendations.append(
+            "Add relevant technical certifications or course completions."
+        )
+
+    # Experience recommendations
+    if len(profile.get("experience", [])) == 0:
+        recommendations.append(
+            "Add internship, training, hackathon, or practical experience "
+            "where applicable."
+        )
+
+    # Education recommendations
+    if len(profile.get("education", [])) == 0:
+        recommendations.append(
+            "Make your education details clear, including degree, branch, "
+            "college, and relevant academic information."
+        )
+
+    # Strength-based recommendation
+    if strengths:
+        recommendations.append(
+            "Highlight your strongest skills clearly in the Skills and Projects sections."
+        )
+
+    # General resume improvement
+    recommendations.append(
+        "Use measurable results in project and experience descriptions "
+        "whenever possible."
+    )
+
+    return recommendations
+
+
 def generate_placement_recommendations(
     resume_text: str,
     target_role: str,
@@ -1021,6 +1290,65 @@ def generate_placement_recommendations(
         "recommendations": recommendations
     }
 
+def generate_real_ai_resume_analysis(
+    resume_text: str,
+    target_role: str,
+    detected_skills: list,
+    missing_skills: list
+):
+    if not openai_client:
+        return None
+
+    try:
+        resume_text = resume_text[:12000]
+
+        prompt = f"""
+You are PlacementPro AI, an expert resume reviewer and placement coach.
+
+Target role:
+{target_role}
+
+Detected skills:
+{", ".join(detected_skills) if detected_skills else "None detected"}
+
+Missing skills for this role:
+{", ".join(missing_skills) if missing_skills else "None"}
+
+Resume text:
+{resume_text}
+
+Analyze this resume for the target role above.
+
+Give:
+1. Resume strengths
+2. Missing or weak skills
+3. Project improvements
+4. Certification suggestions
+5. Experience improvements
+6. ATS improvements
+7. Overall recommendation
+
+Be constructive and concise.
+Do not invent facts about the candidate that aren't in the resume.
+"""
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are a professional resume reviewer and placement coach. "
+                "Give practical, accurate and encouraging feedback."
+            ),
+            input=prompt,
+            max_output_tokens=800
+        )
+
+        return response.output_text.strip()
+
+    except Exception as error:
+        print(f"Resume AI service error: {error}")
+        return None
+
+
 @app.post("/resume/analyze")
 async def analyze_resume(
     file: UploadFile = File(...),
@@ -1046,6 +1374,15 @@ async def analyze_resume(
         )
 
     result = analyze_resume_text(text, target_role)
+
+    ai_resume_analysis = generate_real_ai_resume_analysis(
+        text,
+        target_role,
+        result["detected_skills"],
+        result["missing_skills"]
+    )
+
+    result["ai_resume_analysis"] = ai_resume_analysis
 
     db = SessionLocal()
 
@@ -2367,6 +2704,159 @@ def evaluate_interview_answer(
     }
 
 
+def generate_interview_coaching(
+    answer: str,
+    score: int,
+    category: str
+):
+    answer = answer.strip()
+
+    strengths = []
+    improvements = []
+    action_items = []
+
+    word_count = len(answer.split())
+
+    if word_count >= 30:
+        strengths.append("Your answer has reasonable detail.")
+    elif word_count > 0:
+        improvements.append("Add more explanation and supporting details.")
+    else:
+        improvements.append("Provide a complete answer instead of leaving it empty.")
+
+    technical_keywords = {
+        "technical": [
+            "algorithm",
+            "database",
+            "api",
+            "python",
+            "java",
+            "sql",
+            "data structure",
+            "object oriented"
+        ],
+        "behavioral": [
+            "team",
+            "communication",
+            "leadership",
+            "challenge",
+            "problem",
+            "result"
+        ],
+        "hr": [
+            "career",
+            "goal",
+            "strength",
+            "learning",
+            "experience"
+        ]
+    }
+
+    keywords = technical_keywords.get(
+        category.lower(),
+        technical_keywords["technical"]
+    )
+
+    matched_keywords = [
+        keyword
+        for keyword in keywords
+        if keyword in answer.lower()
+    ]
+
+    if matched_keywords:
+        strengths.append(
+            "You included relevant concepts: "
+            + ", ".join(matched_keywords[:4])
+            + "."
+        )
+    else:
+        improvements.append(
+            "Include relevant technical or role-specific concepts."
+        )
+
+    if score >= 80:
+        strengths.append("Your response covers the main expected points.")
+    elif score >= 60:
+        improvements.append(
+            "Your answer is reasonable, but it can be more precise and structured."
+        )
+    else:
+        improvements.append(
+            "Strengthen the answer with a clear explanation, example, and conclusion."
+        )
+
+    action_items.append(
+        "Use a simple structure: Point → Explanation → Example → Result."
+    )
+
+    if category.lower() == "behavioral":
+        action_items.append(
+            "For behavioral questions, use the STAR approach: Situation, Task, Action, Result."
+        )
+
+    return {
+        "strengths": strengths,
+        "improvements": improvements,
+        "action_items": action_items,
+        "matched_keywords": matched_keywords
+    }
+
+
+def generate_real_ai_interview_coaching(
+    question: str,
+    answer: str,
+    score: int,
+    category: str
+):
+    if not openai_client:
+        return None
+
+    try:
+        prompt = f"""
+You are PlacementPro AI, an expert technical interview coach.
+
+Interview category:
+{category}
+
+Question:
+{question}
+
+Candidate answer:
+{answer}
+
+Current score:
+{score}/100
+
+Analyze the candidate's answer.
+
+Give:
+1. What was done well
+2. What could be improved
+3. A better approach for answering
+4. Important points the candidate missed
+5. A short action plan for improvement
+
+Be constructive and concise.
+Do not invent facts about the candidate.
+"""
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are a professional interview coach. "
+                "Give practical, accurate and encouraging feedback."
+            ),
+            input=prompt,
+            max_output_tokens=600
+        )
+
+        return response.output_text.strip()
+
+    except Exception as error:
+        print(f"Interview AI service error: {error}")
+        return None
+
+
 @app.post("/interview/evaluate")
 def evaluate_answer(
     question_id: int,
@@ -2393,6 +2883,26 @@ def evaluate_answer(
         answer,
         question.category
     )
+
+    coaching = generate_interview_coaching(
+        answer,
+        result["score"],
+        question.category
+    )
+
+    real_ai_coaching = generate_real_ai_interview_coaching(
+        question=question.question,
+        answer=answer,
+        score=result["score"],
+        category=question.category
+    )
+
+    if real_ai_coaching:
+        coaching["real_ai_analysis"] = real_ai_coaching
+    else:
+        coaching["real_ai_analysis"] = None
+
+    result["coaching"] = coaching
 
     attempt = (
         db.query(InterviewAttempt)
@@ -3026,13 +3536,26 @@ def normalize_skill(skill):
         "oops": "oop",
         "object oriented programming": "oop",
         "object-oriented programming": "oop",
+
         "js": "javascript",
         "reactjs": "react",
         "react.js": "react",
+
         "nodejs": "node.js",
+        "node": "node.js",
+
         "postgres": "postgresql",
-        "rest": "rest api",
+        "postgres sql": "postgresql",
+
         "data structures and algorithms": "dsa",
+
+        "machine learning": "machine learning",
+        "ml": "machine learning",
+
+        "artificial intelligence": "ai",
+
+        "rest": "rest api",
+        "restful api": "rest api",
     }
 
     return aliases.get(skill, skill)
@@ -3832,6 +4355,206 @@ def generate_daily_plan(
     return unique_plan[:5]
 
 
+def generate_real_ai_dashboard_insight(
+    target_role: str,
+    scores: dict,
+    missing_skills: list,
+    readiness_score: int
+):
+    if not openai_client:
+        return None
+
+    try:
+        prompt = f"""
+You are PlacementPro AI.
+
+Student target role:
+{target_role}
+
+Placement scores:
+Resume: {scores["Resume"]}%
+Coding: {scores["Coding"]}%
+Aptitude: {scores["Aptitude"]}%
+Projects: {scores["Projects"]}%
+Interview: {scores["Interview"]}%
+
+Overall readiness:
+{readiness_score}%
+
+Missing skills:
+{", ".join(missing_skills[:10]) if missing_skills else "None"}
+
+Generate a concise placement dashboard insight.
+
+Include:
+- Biggest improvement opportunity
+- What the student should focus on today
+- One practical action
+
+Keep it under 100 words.
+Use only the information provided.
+Do not make claims about placement guarantees.
+"""
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are a concise and practical placement advisor."
+            ),
+            input=prompt,
+            max_output_tokens=250
+        )
+
+        return response.output_text.strip()
+
+    except Exception as error:
+        print(f"Dashboard AI error: {error}")
+        return None
+
+
+@app.get("/students/{student_id}/dashboard-insight")
+def dashboard_insight(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized"
+        )
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores_data = calculate_student_scores(student_id, db)
+
+    scores = {
+        "Resume": scores_data["resume_score"],
+        "Coding": scores_data["coding_score"],
+        "Aptitude": scores_data["aptitude_score"],
+        "Projects": scores_data["project_score"],
+        "Interview": scores_data["interview_score"],
+    }
+
+    readiness_score = round(
+        scores["Resume"] * 0.20 +
+        scores["Coding"] * 0.25 +
+        scores["Aptitude"] * 0.15 +
+        scores["Projects"] * 0.20 +
+        scores["Interview"] * 0.20
+    )
+
+    gap_analysis = analyze_skill_gap(student, db)
+
+    missing_skills = [
+        gap["skill"] for gap in gap_analysis["skill_gaps"]
+    ]
+
+    db.close()
+
+    cache_key = f"dashboard_insight_{student_id}_{readiness_score}"
+
+    cached = get_ai_cache(cache_key)
+
+    if cached:
+        return {
+            "readiness_score": readiness_score,
+            "scores": scores,
+            "missing_skills": missing_skills,
+            "ai_insight": cached
+        }
+
+    insight = generate_real_ai_dashboard_insight(
+        target_role=student.target_role,
+        scores=scores,
+        missing_skills=missing_skills,
+        readiness_score=readiness_score
+    )
+
+    if insight:
+        set_ai_cache(cache_key, insight)
+
+    return {
+        "readiness_score": readiness_score,
+        "scores": scores,
+        "missing_skills": missing_skills,
+        "ai_insight": insight
+    }
+
+
+def generate_real_ai_daily_plan(
+    target_role: str,
+    scores: dict,
+    missing_skills: list
+):
+    if not openai_client:
+        return None
+
+    try:
+        prompt = f"""
+You are PlacementPro AI, a placement preparation planner.
+
+Target role:
+{target_role}
+
+Current scores:
+Resume: {scores["Resume"]}%
+Coding: {scores["Coding"]}%
+Aptitude: {scores["Aptitude"]}%
+Projects: {scores["Projects"]}%
+Interview: {scores["Interview"]}%
+
+Missing skills:
+{", ".join(missing_skills[:10]) if missing_skills else "None"}
+
+Create a focused daily placement plan.
+
+Give exactly 5 tasks.
+
+For each task include:
+- Task
+- Area
+- Approximate time
+- Expected outcome
+
+Prioritize the weakest areas and important missing skills.
+
+Keep the total plan realistic for one day.
+Do not claim that completing the plan guarantees placement.
+"""
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are a practical placement preparation planner. "
+                "Create concise and actionable daily tasks."
+            ),
+            input=prompt,
+            max_output_tokens=600
+        )
+
+        result = parse_ai_json(response.output_text)
+
+        if result and isinstance(result.get("tasks"), list):
+            return json.dumps(result)
+
+        return response.output_text.strip()
+
+    except Exception as error:
+        print(f"Daily plan AI error: {error}")
+        return None
+
+
 @app.get("/students/{student_id}/daily-plan")
 def get_daily_plan(
     student_id: int,
@@ -3860,8 +4583,6 @@ def get_daily_plan(
 
     gap_analysis = analyze_skill_gap(student, db)
 
-    db.close()
-
     plan = generate_daily_plan(
         scores["resume_score"],
         scores["coding_score"],
@@ -3871,9 +4592,34 @@ def get_daily_plan(
         gap_analysis["skill_gaps"]
     )
 
+    capitalized_scores = {
+        "Resume": scores["resume_score"],
+        "Coding": scores["coding_score"],
+        "Aptitude": scores["aptitude_score"],
+        "Projects": scores["project_score"],
+        "Interview": scores["interview_score"],
+    }
+
+    missing_skills = [
+        gap["skill"] for gap in gap_analysis["skill_gaps"]
+    ]
+
+    ai_daily_plan = generate_real_ai_daily_plan(
+        target_role=student.target_role,
+        scores=capitalized_scores,
+        missing_skills=missing_skills
+    )
+
+    db.close()
+
     return {
         "student": student.name,
-        "plan": plan
+        "plan": plan,
+        "target_role": student.target_role,
+        "scores": capitalized_scores,
+        "missing_skills": missing_skills,
+        "ai_daily_plan": ai_daily_plan,
+        "fallback_plan": plan
     }
 
 
@@ -4012,6 +4758,861 @@ def generate_advanced_recommendations(
         })
 
     return recommendations
+
+
+def generate_career_roadmap(
+    target_role: str,
+    resume_score: int,
+    coding_score: int,
+    aptitude_score: int,
+    project_score: int,
+    interview_score: int,
+    missing_skills: list
+):
+    roadmap = []
+
+    # Week 1 - Resume
+    if resume_score < 80:
+        roadmap.append({
+            "week": "Week 1",
+            "focus": "Resume Improvement",
+            "tasks": [
+                "Improve resume structure and readability",
+                "Highlight technical skills and projects",
+                "Add measurable project achievements"
+            ]
+        })
+    else:
+        roadmap.append({
+            "week": "Week 1",
+            "focus": "Resume Optimization",
+            "tasks": [
+                "Review resume for role relevance",
+                "Improve project descriptions",
+                "Keep resume updated"
+            ]
+        })
+
+    # Week 2 - Coding
+    if coding_score < 80:
+        roadmap.append({
+            "week": "Week 2",
+            "focus": "Coding & DSA",
+            "tasks": [
+                "Practice arrays and strings",
+                "Practice searching and sorting",
+                "Solve coding problems regularly"
+            ]
+        })
+    else:
+        roadmap.append({
+            "week": "Week 2",
+            "focus": "Advanced Coding",
+            "tasks": [
+                "Solve medium-level problems",
+                "Improve time complexity",
+                "Practice interview-style problems"
+            ]
+        })
+
+    # Week 3 - Skills
+    skill_tasks = missing_skills[:5] if missing_skills else [
+        "Strengthen your existing technical skills"
+    ]
+
+    roadmap.append({
+        "week": "Week 3",
+        "focus": f"{target_role} Skills",
+        "tasks": skill_tasks
+    })
+
+    # Week 4 - Projects
+    if project_score < 80:
+        roadmap.append({
+            "week": "Week 4",
+            "focus": "Projects",
+            "tasks": [
+                "Build one role-relevant project",
+                "Add the project to GitHub",
+                "Document the technologies used"
+            ]
+        })
+    else:
+        roadmap.append({
+            "week": "Week 4",
+            "focus": "Project Enhancement",
+            "tasks": [
+                "Improve an existing project",
+                "Add meaningful features",
+                "Prepare a project explanation for interviews"
+            ]
+        })
+
+    # Week 5 - Aptitude
+    if aptitude_score < 80:
+        roadmap.append({
+            "week": "Week 5",
+            "focus": "Aptitude",
+            "tasks": [
+                "Practice quantitative aptitude",
+                "Practice logical reasoning",
+                "Take timed aptitude tests"
+            ]
+        })
+
+    # Week 6 - Interview
+    if interview_score < 80:
+        roadmap.append({
+            "week": "Week 6",
+            "focus": "Interview Preparation",
+            "tasks": [
+                "Practice technical questions",
+                "Practice HR questions",
+                "Improve answer structure and communication"
+            ]
+        })
+    else:
+        roadmap.append({
+            "week": "Week 6",
+            "focus": "Interview Practice",
+            "tasks": [
+                "Take mock interviews",
+                "Practice explaining projects",
+                "Practice role-specific questions"
+            ]
+        })
+
+    return roadmap
+
+
+def generate_real_ai_career_roadmap(
+    target_role: str,
+    resume_score: int,
+    coding_score: int,
+    aptitude_score: int,
+    project_score: int,
+    interview_score: int,
+    missing_skills: list
+):
+    if not openai_client:
+        return None
+
+    try:
+        prompt = f"""
+You are PlacementPro AI, an expert placement preparation coach.
+
+Target role:
+{target_role}
+
+Current scores:
+Resume: {resume_score}%
+Coding & DSA: {coding_score}%
+Aptitude: {aptitude_score}%
+Projects: {project_score}%
+Interview: {interview_score}%
+
+Missing skills for this role:
+{", ".join(missing_skills[:15]) if missing_skills else "None detected"}
+
+Create a personalized week-by-week placement preparation roadmap
+(4 to 6 weeks) for this student, based on their actual scores and
+skill gaps above.
+
+For each week, provide:
+1. A short focus area title
+2. 3-4 concrete, actionable tasks
+
+Prioritize the student's weakest areas first.
+Be realistic for a college student preparing for placements.
+Do not invent scores or skills that weren't provided above.
+"""
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are a practical placement preparation coach. "
+                "Give a realistic, personalized week-by-week roadmap."
+            ),
+            input=prompt,
+            max_output_tokens=900
+        )
+
+        return response.output_text.strip()
+
+    except Exception as error:
+        print(f"Career roadmap AI service error: {error}")
+        return None
+
+
+@app.get("/students/{student_id}/career-roadmap")
+def get_career_roadmap(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores = calculate_student_scores(student_id, db)
+
+    resume_score = scores["resume_score"]
+    coding_score = scores["coding_score"]
+    aptitude_score = scores["aptitude_score"]
+    project_score = scores["project_score"]
+    interview_score = scores["interview_score"]
+
+    missing_skills = []
+
+    latest_resume = (
+        db.query(ResumeAnalysis)
+        .filter(ResumeAnalysis.student_id == student_id)
+        .order_by(ResumeAnalysis.id.desc())
+        .first()
+    )
+
+    if latest_resume:
+        try:
+            detected = json.loads(
+                latest_resume.detected_skills or "[]"
+            )
+
+            role_skills = ROLE_SKILLS.get(
+                (student.target_role or "").lower().strip(),
+                ROLE_SKILLS["software developer"]
+            )
+
+            missing_skills = [
+                skill for skill in role_skills
+                if skill not in detected
+            ]
+
+        except (json.JSONDecodeError, TypeError):
+            missing_skills = []
+
+    roadmap = generate_career_roadmap(
+        student.target_role,
+        resume_score,
+        coding_score,
+        aptitude_score,
+        project_score,
+        interview_score,
+        missing_skills
+    )
+
+    ai_roadmap = generate_real_ai_career_roadmap(
+        target_role=student.target_role,
+        resume_score=resume_score,
+        coding_score=coding_score,
+        aptitude_score=aptitude_score,
+        project_score=project_score,
+        interview_score=interview_score,
+        missing_skills=missing_skills
+    )
+
+    db.close()
+
+    return {
+        "target_role": student.target_role,
+        "roadmap": roadmap,
+        "ai_roadmap": ai_roadmap
+    }
+
+
+def generate_project_suggestions(
+    target_role: str,
+    missing_skills: list,
+    project_score: int
+):
+    suggestions = []
+
+    role_projects = {
+        "software developer": [
+            "Online Coding Practice Platform",
+            "Student Placement Management System",
+            "Expense Tracker with Analytics",
+            "AI-Powered Resume Analyzer"
+        ],
+        "frontend developer": [
+            "Interactive Portfolio Dashboard",
+            "E-Commerce Frontend",
+            "Job Search Dashboard",
+            "Real-Time Task Management UI"
+        ],
+        "backend developer": [
+            "REST API for Placement Management",
+            "Authentication and User Management API",
+            "Online Book Management API",
+            "Backend Analytics Dashboard"
+        ],
+        "full stack developer": [
+            "Full Stack Job Portal",
+            "College Placement Management System",
+            "Project Collaboration Platform",
+            "E-Learning Management System"
+        ],
+        "data analyst": [
+            "Student Performance Analytics",
+            "Placement Data Dashboard",
+            "Sales Analytics Dashboard",
+            "College Attendance Analysis"
+        ]
+    }
+
+    projects = role_projects.get(
+        (target_role or "").lower().strip(),
+        role_projects["software developer"]
+    )
+
+    for project in projects[:4]:
+        suggestions.append({
+            "title": project,
+            "reason": "Relevant to your target role",
+            "skills": missing_skills[:4]
+        })
+
+    if project_score < 60:
+        suggestions.insert(0, {
+            "title": "Build a role-focused portfolio project",
+            "reason": "Your project score indicates that adding a strong practical project could improve your profile.",
+            "skills": missing_skills[:5]
+        })
+
+    return suggestions
+
+
+def generate_real_ai_project_suggestions(
+    target_role: str,
+    missing_skills: list,
+    project_score: int
+):
+    if not openai_client:
+        return None
+
+    try:
+        prompt = f"""
+You are PlacementPro AI, a professional software project mentor.
+
+Target role:
+{target_role}
+
+Current project score:
+{project_score}%
+
+Missing skills:
+{", ".join(missing_skills[:15]) if missing_skills else "None detected"}
+
+Suggest 5 practical portfolio projects for this student.
+
+For each project provide:
+1. Project title
+2. Problem it solves
+3. Recommended technology stack
+4. Skills it develops
+5. Key features
+6. Why it helps for the target role
+
+Prioritize projects that help close the student's skill gaps.
+
+Projects should be realistic for a college student.
+Do not claim that a project guarantees placement.
+"""
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are a practical software project mentor. "
+                "Give realistic, placement-focused project ideas."
+            ),
+            input=prompt,
+            max_output_tokens=1000
+        )
+
+        return response.output_text.strip()
+
+    except Exception as error:
+        print(f"Project AI service error: {error}")
+        return None
+
+
+@app.get("/students/{student_id}/project-suggestions")
+def get_project_suggestions(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores = calculate_student_scores(student_id, db)
+    project_score = scores["project_score"]
+
+    missing_skills = []
+
+    latest_resume = (
+        db.query(ResumeAnalysis)
+        .filter(
+            ResumeAnalysis.student_id == student_id
+        )
+        .order_by(ResumeAnalysis.id.desc())
+        .first()
+    )
+
+    if latest_resume:
+        try:
+            detected = json.loads(
+                latest_resume.detected_skills or "[]"
+            )
+
+            role_skills = ROLE_SKILLS.get(
+                (student.target_role or "").lower().strip(),
+                ROLE_SKILLS["software developer"]
+            )
+
+            missing_skills = [
+                skill
+                for skill in role_skills
+                if skill not in detected
+            ]
+
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    suggestions = generate_project_suggestions(
+        student.target_role,
+        missing_skills,
+        project_score
+    )
+
+    real_ai_projects = generate_real_ai_project_suggestions(
+        target_role=student.target_role,
+        missing_skills=missing_skills,
+        project_score=project_score
+    )
+
+    db.close()
+
+    return {
+        "target_role": student.target_role,
+        "project_score": project_score,
+        "missing_skills": missing_skills,
+        "suggestions": suggestions,
+        "fallback_projects": suggestions,
+        "ai_project_suggestions": real_ai_projects
+    }
+
+
+def generate_placement_chat_response(
+    message: str,
+    student,
+    resume_score: int,
+    coding_score: int,
+    aptitude_score: int,
+    project_score: int,
+    interview_score: int,
+    missing_skills: list
+):
+    msg = message.lower().strip()
+
+    scores = {
+        "Resume": resume_score,
+        "Coding": coding_score,
+        "Aptitude": aptitude_score,
+        "Projects": project_score,
+        "Interview": interview_score,
+    }
+
+    weakest_area = min(scores, key=scores.get)
+    weakest_score = scores[weakest_area]
+
+    if any(word in msg for word in ["improve", "weak", "focus"]):
+        return (
+            f"Your current area needing the most attention is "
+            f"{weakest_area} with a score of {weakest_score}%. "
+            f"Start by practicing this area consistently and track your progress."
+        )
+
+    if "skill" in msg or "skills" in msg:
+        if missing_skills:
+            return (
+                f"For your {student.target_role} target role, "
+                f"focus on these skills: "
+                + ", ".join(missing_skills[:6])
+                + "."
+            )
+
+        return (
+            f"Your detected skills currently cover the main requirements "
+            f"for your {student.target_role} target role. "
+            f"Continue strengthening them through projects and coding practice."
+        )
+
+    if "coding" in msg or "dsa" in msg:
+        return (
+            f"Your coding score is {coding_score}%. "
+            f"Practice arrays, strings, searching, sorting and "
+            f"problem-solving regularly. "
+            f"Focus on understanding the approach before writing code."
+        )
+
+    if "resume" in msg:
+        return (
+            f"Your resume score is {resume_score}%. "
+            f"Focus on strong project descriptions, relevant skills, "
+            f"certifications and measurable achievements."
+        )
+
+    if "interview" in msg:
+        return (
+            f"Your interview score is {interview_score}%. "
+            f"Practice technical, HR and behavioral questions. "
+            f"For behavioral questions, structure answers using STAR."
+        )
+
+    if "project" in msg:
+        return (
+            f"Your project score is {project_score}%. "
+            f"Build projects related to your target role: "
+            f"{student.target_role}. "
+            f"Add them to your resume and GitHub."
+        )
+
+    if "aptitude" in msg:
+        return (
+            f"Your aptitude score is {aptitude_score}%. "
+            f"Practice quantitative aptitude, logical reasoning "
+            f"and timed mock tests."
+        )
+
+    if any(word in msg for word in ["hello", "hi", "hey"]):
+        return (
+            f"Hi {student.name}! I'm your PlacementPro AI Assistant. "
+            f"I can help with your resume, coding, aptitude, projects, "
+            f"interviews and placement preparation."
+        )
+
+    return (
+        f"You're preparing for a {student.target_role} role. "
+        f"Your current weakest area is {weakest_area} "
+        f"({weakest_score}%). "
+        f"Ask me about your resume, coding, aptitude, projects, "
+        f"interview preparation or missing skills."
+    )
+
+
+class ChatMessage(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    conversation_history: list = Field(default_factory=list)
+
+
+@app.post("/students/{student_id}/placement-chat")
+def placement_chat(
+    student_id: int,
+    data: ChatMessage,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied"
+        )
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores = calculate_student_scores(student_id, db)
+
+    resume_score = scores["resume_score"]
+    coding_score = scores["coding_score"]
+    aptitude_score = scores["aptitude_score"]
+    project_score = scores["project_score"]
+    interview_score = scores["interview_score"]
+
+    missing_skills = []
+
+    latest_resume = (
+        db.query(ResumeAnalysis)
+        .filter(
+            ResumeAnalysis.student_id == student_id
+        )
+        .order_by(ResumeAnalysis.id.desc())
+        .first()
+    )
+
+    if latest_resume:
+        try:
+            detected = json.loads(
+                latest_resume.detected_skills or "[]"
+            )
+
+            role_skills = ROLE_SKILLS.get(
+                (student.target_role or "").lower().strip(),
+                ROLE_SKILLS["software developer"]
+            )
+
+            missing_skills = [
+                skill
+                for skill in role_skills
+                if skill not in detected
+            ]
+
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    response = generate_placement_chat_response(
+        data.message,
+        student,
+        resume_score,
+        coding_score,
+        aptitude_score,
+        project_score,
+        interview_score,
+        missing_skills
+    )
+
+    db.close()
+
+    return {
+        "message": response
+    }
+
+
+def generate_real_ai_learning_recommendations(
+    target_role: str,
+    scores: dict,
+    missing_skills: list
+):
+    if not openai_client:
+        return None
+
+    try:
+        prompt = f"""
+You are PlacementPro AI.
+
+Target role:
+{target_role}
+
+Scores:
+{json.dumps(scores, indent=2)}
+
+Missing skills:
+{", ".join(missing_skills[:15]) if missing_skills else "None"}
+
+Give 5 personalized learning recommendations.
+
+For each recommendation provide:
+- Topic
+- Why it matters
+- What to learn
+- Practice suggestion
+
+Prioritize weak areas.
+Keep recommendations practical for a college student.
+"""
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions="You are a practical software placement mentor.",
+            input=prompt,
+            max_output_tokens=700
+        )
+
+        return response.output_text.strip()
+
+    except Exception as error:
+        print(f"Learning AI error: {error}")
+        return None
+
+
+@app.get("/students/{student_id}/learning-recommendations")
+def learning_recommendations(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores_data = calculate_student_scores(student_id, db)
+
+    scores = {
+        "Resume": scores_data["resume_score"],
+        "Coding": scores_data["coding_score"],
+        "Aptitude": scores_data["aptitude_score"],
+        "Projects": scores_data["project_score"],
+        "Interview": scores_data["interview_score"],
+    }
+
+    gap_analysis = analyze_skill_gap(student, db)
+
+    missing_skills = [
+        gap["skill"] for gap in gap_analysis["skill_gaps"]
+    ]
+
+    recommendations = generate_real_ai_learning_recommendations(
+        student.target_role,
+        scores,
+        missing_skills
+    )
+
+    db.close()
+
+    return {
+        "recommendations": recommendations,
+        "scores": scores,
+        "missing_skills": missing_skills
+    }
+
+
+def generate_real_ai_readiness_analysis(
+    target_role: str,
+    scores: dict,
+    readiness_score: int
+):
+    if not openai_client:
+        return None
+
+    try:
+        prompt = f"""
+You are PlacementPro AI.
+
+Target role: {target_role}
+
+Readiness score: {readiness_score}%
+
+Scores:
+{json.dumps(scores, indent=2)}
+
+Explain the student's current placement readiness.
+
+Include:
+1. Current position
+2. Strong areas
+3. Areas needing improvement
+4. Three actions to improve readiness
+5. Short-term focus
+
+Keep it under 150 words.
+Do not guarantee placement.
+"""
+
+        response = openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions="You are a professional placement readiness advisor.",
+            input=prompt,
+            max_output_tokens=400
+        )
+
+        return response.output_text.strip()
+
+    except Exception as error:
+        print(f"Readiness AI error: {error}")
+        return None
+
+
+@app.get("/students/{student_id}/readiness-analysis")
+def readiness_analysis(
+    student_id: int,
+    current_student_id: int = Depends(get_current_student)
+):
+    if student_id != current_student_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    db = SessionLocal()
+
+    student = db.query(Student).filter(
+        Student.id == student_id
+    ).first()
+
+    if not student:
+        db.close()
+        raise HTTPException(
+            status_code=404,
+            detail="Student not found"
+        )
+
+    scores_data = calculate_student_scores(student_id, db)
+
+    scores = {
+        "Resume": scores_data["resume_score"],
+        "Coding": scores_data["coding_score"],
+        "Aptitude": scores_data["aptitude_score"],
+        "Projects": scores_data["project_score"],
+        "Interview": scores_data["interview_score"],
+    }
+
+    readiness_score = round(
+        scores["Resume"] * 0.20 +
+        scores["Coding"] * 0.25 +
+        scores["Aptitude"] * 0.15 +
+        scores["Projects"] * 0.20 +
+        scores["Interview"] * 0.20
+    )
+
+    analysis = generate_real_ai_readiness_analysis(
+        student.target_role,
+        scores,
+        readiness_score
+    )
+
+    db.close()
+
+    return {
+        "readiness_score": readiness_score,
+        "analysis": analysis,
+        "scores": scores
+    }
 
 
 @app.get("/students/{student_id}/recommendations")

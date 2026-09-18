@@ -66,10 +66,12 @@ function App() {
   const [projectScore, setProjectScore] = useState(0);
   const [interviewScore, setInterviewScore] = useState(0);
   const [readinessScore, setReadinessScore] = useState(0);
+  const [aiInsight, setAiInsight] = useState("");
   const [companyPreparation, setCompanyPreparation] = useState(null);
   const [companyPreparationLoading, setCompanyPreparationLoading] = useState(false);
   const [progressLoading, setProgressLoading] = useState(true);
   const [dailyPlan, setDailyPlan] = useState([]);
+  const [aiDailyPlan, setAiDailyPlan] = useState("");
   const [dailyPlanLoading, setDailyPlanLoading] = useState(false);
   const [analytics, setAnalytics] = useState(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
@@ -288,6 +290,33 @@ function App() {
   }, [student]);
 
   useEffect(() => {
+    const loadAIInsight = async () => {
+      if (!student?.id) return;
+
+      try {
+        const response = await apiFetch(
+          `${API_BASE}/students/${student.id}/dashboard-insight`
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail || "Could not load AI insight"
+          );
+        }
+
+        setAiInsight(data.ai_insight || "");
+      } catch (error) {
+        console.error("AI insight error:", error);
+        setAiInsight("");
+      }
+    };
+
+    loadAIInsight();
+  }, [student]);
+
+  useEffect(() => {
     const loadCompanyPreparation = async () => {
       if (!student?.id) return;
 
@@ -376,6 +405,7 @@ function App() {
       }
 
       setDailyPlan(data.plan || []);
+      setAiDailyPlan(data.ai_daily_plan || "");
     } catch (error) {
       console.error("Daily plan error:", error);
     } finally {
@@ -486,6 +516,9 @@ function App() {
     { name: "Projects", icon: "🚀" },
     { name: "Progress", icon: "📈" },
     { name: "Analytics", icon: "📊" },
+    { name: "Career Roadmap", icon: "🗺️" },
+    { name: "Project Suggestions", icon: "💡" },
+    { name: "AI Assistant", icon: "💬" },
   ];
 
   // Checking localStorage for a session token before deciding what to render.
@@ -769,6 +802,12 @@ function App() {
               )}
             </div>
           </section>
+        ) : active === "Career Roadmap" ? (
+          <CareerRoadmapPage student={student} />
+        ) : active === "Project Suggestions" ? (
+          <ProjectSuggestionsPage student={student} />
+        ) : active === "AI Assistant" ? (
+          <PlacementChatPage student={student} />
         ) : (
           /* Dashboard */
           <section className="relative p-4 sm:p-6 lg:p-8">
@@ -831,6 +870,35 @@ function App() {
                       </div>
                     </div>
                   </div>
+
+                  {aiInsight && (
+                    <div className="mt-5 rounded-2xl border border-cyan-400/20 bg-gradient-to-r from-cyan-400/[0.06] to-purple-500/[0.06] p-6 shadow-[0_0_35px_rgba(34,211,238,0.08)]">
+
+                      <div className="flex items-start gap-4">
+
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-cyan-400/20 bg-cyan-400/10 text-xl">
+                          🧠
+                        </div>
+
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-lg font-semibold text-white">
+                              PlacementPro AI Insight
+                            </h3>
+
+                            <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-cyan-300">
+                              AI
+                            </span>
+                          </div>
+
+                          <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-300">
+                            {aiInsight}
+                          </p>
+                        </div>
+
+                      </div>
+                    </div>
+                  )}
 
                   {/* Readiness strip */}
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-5">
@@ -940,6 +1008,31 @@ function App() {
                               </div>
                             </div>
                           ))}
+                        </div>
+                      )}
+
+                      {aiDailyPlan && (
+                        <div className="mt-6 rounded-2xl border border-cyan-400/20 bg-white/[0.03] p-6">
+                          <div className="flex items-center gap-3 mb-5">
+                            <div className="h-11 w-11 rounded-xl bg-cyan-400/10 flex items-center justify-center">
+                              📅
+                            </div>
+
+                            <div>
+                              <h3 className="text-lg font-semibold text-white">
+                                AI Daily Placement Plan
+                              </h3>
+                              <p className="text-sm text-slate-400">
+                                Personalized tasks based on your current progress
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+                            <p className="whitespace-pre-line text-slate-200 leading-7">
+                              {aiDailyPlan}
+                            </p>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -1376,6 +1469,7 @@ function AuthPage({ onAuthSuccess }) {
 function ResumePage({ student }) {
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
+  const [aiResumeAnalysis, setAiResumeAnalysis] = useState("");
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
   const [aiRecommendations, setAiRecommendations] = useState(null);
@@ -1475,6 +1569,7 @@ function ResumePage({ student }) {
       }
 
       setResult(data);
+      setAiResumeAnalysis(data.ai_resume_analysis || "");
 
       await getAIRecommendations(file);
 
@@ -1966,6 +2061,34 @@ function ResumePage({ student }) {
               )}
 
             </div>
+          </div>
+        )}
+
+        {aiResumeAnalysis && (
+          <div className="mt-6 rounded-2xl border border-cyan-400/20 bg-white/[0.03] p-6 shadow-[0_0_30px_rgba(34,211,238,0.06)]">
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="h-10 w-10 rounded-xl bg-cyan-400/10 flex items-center justify-center">
+                🤖
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-white">
+                  Real AI Resume Analysis
+                </h3>
+
+                <p className="text-sm text-slate-400">
+                  Personalized feedback for your target role
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl bg-black/20 border border-white/10 p-5">
+              <p className="whitespace-pre-line text-slate-200 leading-7">
+                {aiResumeAnalysis}
+              </p>
+            </div>
+
           </div>
         )}
 
@@ -3131,6 +3254,7 @@ function InterviewPage({ student }) {
     student?.target_role || "Software Developer"
   );
   const [evaluation, setEvaluation] = useState(null);
+  const [realAiAnalysis, setRealAiAnalysis] = useState("");
   const [evaluating, setEvaluating] = useState(false);
   const [interviewStats, setInterviewStats] = useState(null);
   const [interviewRecommendations, setInterviewRecommendations] = useState([]);
@@ -3248,6 +3372,7 @@ function InterviewPage({ student }) {
       }
 
       setEvaluation(evaluationData);
+      setRealAiAnalysis(evaluationData.coaching?.real_ai_analysis || "");
       setSubmitted(true);
 
       await loadInterviewStats();
@@ -3267,6 +3392,7 @@ function InterviewPage({ student }) {
       setAnswer("");
       setSubmitted(false);
       setEvaluation(null);
+      setRealAiAnalysis("");
     }
   };
 
@@ -3276,6 +3402,7 @@ function InterviewPage({ student }) {
       setAnswer("");
       setSubmitted(false);
       setEvaluation(null);
+      setRealAiAnalysis("");
     }
   };
 
@@ -3454,6 +3581,98 @@ function InterviewPage({ student }) {
                   ))}
                 </ul>
               </div>
+
+              {evaluation?.coaching && (
+                <div className="mt-6 rounded-2xl border border-cyan-400/20 bg-cyan-400/[0.03] p-6">
+
+                  <div className="mb-5">
+                    <h3 className="text-xl font-bold text-white">
+                      AI Interview Coach
+                    </h3>
+
+                    <p className="mt-1 text-sm text-slate-400">
+                      Personalized feedback to improve your interview answers.
+                    </p>
+                  </div>
+
+                  {evaluation.coaching.strengths?.length > 0 && (
+                    <div className="mb-5">
+                      <h4 className="mb-2 font-semibold text-cyan-300">
+                        ✓ Strengths
+                      </h4>
+
+                      <div className="space-y-2">
+                        {evaluation.coaching.strengths.map((item, index) => (
+                          <p key={index} className="text-sm text-slate-300">
+                            • {item}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {evaluation.coaching.improvements?.length > 0 && (
+                    <div className="mb-5">
+                      <h4 className="mb-2 font-semibold text-purple-300">
+                        ⚡ Improve
+                      </h4>
+
+                      <div className="space-y-2">
+                        {evaluation.coaching.improvements.map((item, index) => (
+                          <p key={index} className="text-sm text-slate-300">
+                            • {item}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {evaluation.coaching.action_items?.length > 0 && (
+                    <div>
+                      <h4 className="mb-2 font-semibold text-white">
+                        🎯 Action Plan
+                      </h4>
+
+                      <div className="space-y-2">
+                        {evaluation.coaching.action_items.map((item, index) => (
+                          <p key={index} className="text-sm text-slate-300">
+                            • {item}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+              )}
+
+              {realAiAnalysis && (
+                <div className="mt-6 rounded-2xl border border-purple-400/20 bg-white/[0.03] p-6 shadow-[0_0_35px_rgba(168,85,247,0.08)]">
+
+                  <div className="flex items-center gap-3 mb-5">
+                    <div className="h-11 w-11 rounded-xl bg-purple-400/10 flex items-center justify-center text-xl">
+                      🤖
+                    </div>
+
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">
+                        Real AI Interview Coach
+                      </h3>
+
+                      <p className="text-sm text-slate-400">
+                        Personalized feedback on your interview answer
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+                    <p className="whitespace-pre-line text-slate-200 leading-7">
+                      {realAiAnalysis}
+                    </p>
+                  </div>
+
+                </div>
+              )}
             </div>
           )}
 
@@ -3874,19 +4093,19 @@ function CompaniesPage({ student }) {
                     </div>
 
                     {matchData[company.id].matched_skills?.length > 0 && (
-                      <div className="mt-3">
-                        <p className="font-medium text-sm">
-                          Matched Skills
+                      <div className="mt-4">
+                        <p className="mb-2 text-sm font-semibold text-white">
+                          ✓ Matching Skills
                         </p>
 
-                        <div className="mt-2 flex flex-wrap gap-2">
+                        <div className="flex flex-wrap gap-2">
                           {matchData[company.id].matched_skills.map(
-                            (skill) => (
+                            (skill, index) => (
                               <span
-                                key={skill}
-                                className="rounded-full bg-green-100 px-3 py-1 text-sm"
+                                key={index}
+                                className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-xs text-cyan-300"
                               >
-                                ✅ {skill}
+                                {skill}
                               </span>
                             )
                           )}
@@ -3895,19 +4114,19 @@ function CompaniesPage({ student }) {
                     )}
 
                     {matchData[company.id].missing_skills?.length > 0 && (
-                      <div className="mt-3">
-                        <p className="font-medium text-sm">
-                          Missing Skills
+                      <div className="mt-4">
+                        <p className="mb-2 text-sm font-semibold text-white">
+                          ⚡ Skills to Improve
                         </p>
 
-                        <div className="mt-2 flex flex-wrap gap-2">
+                        <div className="flex flex-wrap gap-2">
                           {matchData[company.id].missing_skills.map(
-                            (skill) => (
+                            (skill, index) => (
                               <span
-                                key={skill}
-                                className="rounded-full bg-red-100 px-3 py-1 text-sm"
+                                key={index}
+                                className="rounded-full border border-purple-400/20 bg-purple-400/10 px-3 py-1 text-xs text-purple-300"
                               >
-                                ⚠️ {skill}
+                                {skill}
                               </span>
                             )
                           )}
@@ -3915,20 +4134,51 @@ function CompaniesPage({ student }) {
                       </div>
                     )}
 
-                    <div className="mt-3">
-                      <p className="font-medium text-sm">
-                        Recommendations
-                      </p>
+                    {matchData[company.id].recommendations?.length > 0 && (
+                      <div className="mt-5 rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                        <p className="mb-3 text-sm font-semibold text-white">
+                          🎯 Personalized Recommendations
+                        </p>
 
-                      <ul className="mt-2 list-disc pl-5 text-sm">
-                        {matchData[company.id].recommendations.map(
-                          (recommendation, index) => (
-                            <li key={index}>
-                              {recommendation}
-                            </li>
-                          )
-                        )}
-                      </ul>
+                        <div className="space-y-2">
+                          {matchData[company.id].recommendations
+                            .slice(0, 4)
+                            .map((recommendation, index) => (
+                              <p
+                                key={index}
+                                className="text-sm leading-5 text-slate-300"
+                              >
+                                • {recommendation}
+                              </p>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3">
+
+                      {[
+                        ["Skills", matchData[company.id].skill_match_score],
+                        ["Resume", matchData[company.id].resume_score],
+                        ["Coding", matchData[company.id].coding_score],
+                        ["Aptitude", matchData[company.id].aptitude_score],
+                        ["Projects", matchData[company.id].project_score],
+                        ["Interview", matchData[company.id].interview_score],
+                      ].map(([label, score]) => (
+                        <div
+                          key={label}
+                          className="rounded-xl border border-white/10 bg-white/[0.03] p-3"
+                        >
+                          <p className="text-xs text-slate-500">
+                            {label}
+                          </p>
+
+                          <p className="mt-1 text-lg font-bold text-white">
+                            {score ?? 0}%
+                          </p>
+                        </div>
+                      ))}
+
                     </div>
 
                   </div>
@@ -4465,6 +4715,8 @@ function ProgressPage({ student }) {
   const [loading, setLoading] = useState(true);
   const [skillGap, setSkillGap] = useState(null);
   const [skillGapLoading, setSkillGapLoading] = useState(false);
+  const [learningRecommendations, setLearningRecommendations] = useState("");
+  const [readinessAnalysis, setReadinessAnalysis] = useState("");
 
   useEffect(() => {
     const loadSkillGap = async () => {
@@ -4494,6 +4746,60 @@ function ProgressPage({ student }) {
     };
 
     loadSkillGap();
+  }, [student?.id]);
+
+  useEffect(() => {
+    const loadLearningRecommendations = async () => {
+      if (!student?.id) return;
+
+      try {
+        const response = await apiFetch(
+          `${API_BASE}/students/${student.id}/learning-recommendations`
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail || "Failed to load learning recommendations"
+          );
+        }
+
+        setLearningRecommendations(data.recommendations || "");
+      } catch (error) {
+        console.error("Learning recommendations error:", error);
+        setLearningRecommendations("");
+      }
+    };
+
+    loadLearningRecommendations();
+  }, [student?.id]);
+
+  useEffect(() => {
+    const loadReadinessAnalysis = async () => {
+      if (!student?.id) return;
+
+      try {
+        const response = await apiFetch(
+          `${API_BASE}/students/${student.id}/readiness-analysis`
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail || "Failed to load readiness analysis"
+          );
+        }
+
+        setReadinessAnalysis(data.analysis || "");
+      } catch (error) {
+        console.error("Readiness analysis error:", error);
+        setReadinessAnalysis("");
+      }
+    };
+
+    loadReadinessAnalysis();
   }, [student?.id]);
 
   useEffect(() => {
@@ -4736,6 +5042,60 @@ function ProgressPage({ student }) {
             </p>
           )}
 
+        {learningRecommendations && (
+          <div className="mt-6 rounded-2xl border border-purple-400/20 bg-white/[0.03] p-6">
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="h-11 w-11 rounded-xl bg-purple-400/10 flex items-center justify-center">
+                📚
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-white">
+                  AI Learning Recommendations
+                </h3>
+
+                <p className="text-sm text-slate-400">
+                  What you should learn next
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+              <p className="whitespace-pre-line text-slate-200 leading-7">
+                {learningRecommendations}
+              </p>
+            </div>
+
+          </div>
+        )}
+
+        {readinessAnalysis && (
+          <div className="mt-6 rounded-2xl border border-cyan-400/20 bg-white/[0.03] p-6">
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="h-11 w-11 rounded-xl bg-cyan-400/10 flex items-center justify-center">
+                📈
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-white">
+                  AI Readiness Analysis
+                </h3>
+
+                <p className="text-sm text-slate-400">
+                  Understanding your current placement readiness
+                </p>
+              </div>
+            </div>
+
+            <p className="whitespace-pre-line text-slate-200 leading-7">
+              {readinessAnalysis}
+            </p>
+
+          </div>
+        )}
+
         </div>
     </section>
   );
@@ -4763,6 +5123,457 @@ function ProgressCard({ title, score }) {
       </div>
 
     </div>
+  );
+}
+
+
+/* Career Roadmap Page */
+function CareerRoadmapPage({ student }) {
+  const [roadmap, setRoadmap] = useState([]);
+  const [aiRoadmap, setAiRoadmap] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadRoadmap = async () => {
+      if (!student?.id) return;
+
+      try {
+        setLoading(true);
+
+        const response = await apiFetch(
+          `${API_BASE}/students/${student.id}/career-roadmap`
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail || "Could not load career roadmap"
+          );
+        }
+
+        setRoadmap(data.roadmap || []);
+        setAiRoadmap(data.ai_roadmap || "");
+      } catch (error) {
+        console.error("Failed to load career roadmap:", error);
+        setRoadmap([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadRoadmap();
+  }, [student]);
+
+  if (loading) {
+    return (
+      <div className="p-6 text-slate-400">
+        Loading career roadmap...
+      </div>
+    );
+  }
+
+  return (
+    <section className="p-4 sm:p-6">
+      <div className="max-w-5xl mx-auto space-y-6">
+
+        <div>
+          <p className="text-sm font-medium text-cyan-300">
+            AI CAREER ROADMAP
+          </p>
+
+          <h1 className="mt-1 text-3xl font-bold text-white">
+            Your path to {student?.target_role}
+          </h1>
+
+          <p className="mt-2 text-slate-400">
+            A personalized week-by-week preparation plan.
+          </p>
+        </div>
+
+        {roadmap.length === 0 ? (
+          <div className="rounded-3xl border border-white/10 bg-[#0b1018]/[0.03] p-10 text-center text-slate-400">
+            No roadmap available yet. Complete your resume analysis
+            and preparation activities to generate one.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {roadmap.map((item, index) => (
+              <div
+                key={index}
+                className="rounded-2xl border border-white/10 bg-white/[0.03] p-6"
+              >
+                <div className="flex items-start gap-4">
+
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-cyan-400/10 font-bold text-cyan-300">
+                    {index + 1}
+                  </div>
+
+                  <div className="flex-1">
+
+                    <p className="text-xs font-semibold uppercase tracking-wider text-cyan-300">
+                      {item.week}
+                    </p>
+
+                    <h2 className="mt-1 text-xl font-bold text-white">
+                      {item.focus}
+                    </h2>
+
+                    <div className="mt-4 space-y-2">
+                      {item.tasks?.map((task, taskIndex) => (
+                        <div
+                          key={taskIndex}
+                          className="rounded-lg bg-white/[0.03] px-4 py-3 text-sm text-slate-300"
+                        >
+                          ✓ {task}
+                        </div>
+                      ))}
+                    </div>
+
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {aiRoadmap && (
+          <div className="mt-6 rounded-2xl border border-cyan-400/20 bg-white/[0.03] p-6 shadow-[0_0_35px_rgba(34,211,238,0.08)]">
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="h-11 w-11 rounded-xl bg-cyan-400/10 flex items-center justify-center text-xl">
+                🚀
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-white">
+                  Real AI Career Roadmap
+                </h3>
+
+                <p className="text-sm text-slate-400">
+                  Personalized roadmap based on your current placement profile
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+              <p className="whitespace-pre-line text-slate-200 leading-7">
+                {aiRoadmap}
+              </p>
+            </div>
+
+          </div>
+        )}
+
+      </div>
+    </section>
+  );
+}
+
+
+/* Project Suggestions Page */
+function ProjectSuggestionsPage({ student }) {
+  const [suggestions, setSuggestions] = useState([]);
+  const [aiProjectSuggestions, setAiProjectSuggestions] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadSuggestions = async () => {
+      if (!student?.id) return;
+
+      try {
+        setLoading(true);
+
+        const response = await apiFetch(
+          `${API_BASE}/students/${student.id}/project-suggestions`
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.detail || "Could not load project suggestions"
+          );
+        }
+
+        setSuggestions(data.suggestions || []);
+        setAiProjectSuggestions(data.ai_project_suggestions || "");
+      } catch (error) {
+        console.error("Failed to load project suggestions:", error);
+        setSuggestions([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadSuggestions();
+  }, [student]);
+
+  if (loading) {
+    return (
+      <div className="p-6 text-slate-400">
+        Loading project suggestions...
+      </div>
+    );
+  }
+
+  return (
+    <section className="p-4 sm:p-6">
+      <div className="max-w-5xl mx-auto space-y-6">
+
+        <div>
+          <p className="text-sm font-medium text-cyan-300">
+            AI PROJECT LAB
+          </p>
+
+          <h1 className="mt-1 text-3xl font-bold text-white">
+            Projects for your career
+          </h1>
+
+          <p className="mt-2 text-slate-400">
+            Project ideas based on your target role and skill gaps.
+          </p>
+        </div>
+
+        {suggestions.length === 0 ? (
+          <div className="rounded-3xl border border-white/10 bg-[#0b1018]/[0.03] p-10 text-center text-slate-400">
+            No project suggestions available yet.
+          </div>
+        ) : (
+          <div className="grid gap-5 md:grid-cols-2">
+
+            {suggestions.map((project, index) => (
+              <div
+                key={index}
+                className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 transition hover:border-cyan-400/30"
+              >
+
+                <div className="flex items-start justify-between gap-4">
+
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-cyan-300">
+                      Project {index + 1}
+                    </p>
+
+                    <h2 className="mt-2 text-xl font-bold text-white">
+                      {project.title}
+                    </h2>
+                  </div>
+
+                  <span className="rounded-full bg-cyan-400/10 px-3 py-1 text-xs text-cyan-300">
+                    AI Suggestion
+                  </span>
+
+                </div>
+
+                <p className="mt-4 text-sm leading-6 text-slate-300">
+                  {project.reason}
+                </p>
+
+                {project.skills?.length > 0 && (
+                  <div className="mt-5">
+
+                    <p className="mb-2 text-sm font-semibold text-white">
+                      Skills to practice
+                    </p>
+
+                    <div className="flex flex-wrap gap-2">
+                      {project.skills.map((skill, skillIndex) => (
+                        <span
+                          key={skillIndex}
+                          className="rounded-full border border-purple-400/20 bg-purple-400/10 px-3 py-1 text-xs text-purple-300"
+                        >
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
+
+                  </div>
+                )}
+
+              </div>
+            ))}
+
+          </div>
+        )}
+
+        {aiProjectSuggestions && (
+          <div className="mt-6 rounded-2xl border border-purple-400/20 bg-white/[0.03] p-6 shadow-[0_0_35px_rgba(168,85,247,0.08)]">
+
+            <div className="flex items-center gap-3 mb-5">
+              <div className="h-11 w-11 rounded-xl bg-purple-400/10 flex items-center justify-center text-xl">
+                💡
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-white">
+                  Real AI Project Suggestions
+                </h3>
+
+                <p className="text-sm text-slate-400">
+                  Projects recommended from your target role and skill gaps
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+              <p className="whitespace-pre-line text-slate-200 leading-7">
+                {aiProjectSuggestions}
+              </p>
+            </div>
+
+          </div>
+        )}
+
+      </div>
+    </section>
+  );
+}
+
+
+/* Placement Chat Page */
+function PlacementChatPage({ student }) {
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState([
+    {
+      role: "assistant",
+      text: `Hi ${student?.name || ""}! I'm your PlacementPro AI Assistant. Ask me anything about your placement preparation.`
+    }
+  ]);
+  const [loading, setLoading] = useState(false);
+
+  const sendMessage = async () => {
+    const text = message.trim();
+
+    if (!text || loading) return;
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        text
+      }
+    ]);
+
+    setMessage("");
+    setLoading(true);
+
+    try {
+      const response = await apiFetch(
+        `${API_BASE}/students/${student.id}/placement-chat`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            message: text
+          })
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Could not process that request"
+        );
+      }
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: data.message
+        }
+      ]);
+    } catch (error) {
+      console.error("Chat error:", error);
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: "Sorry, I couldn't process that request."
+        }
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <section className="p-4 sm:p-6">
+      <div className="flex h-[calc(100vh-160px)] max-w-4xl mx-auto flex-col">
+
+        <div className="mb-5">
+          <p className="text-sm font-medium text-cyan-300">
+            PLACEMENTPRO AI
+          </p>
+
+          <h1 className="mt-1 text-3xl font-bold text-white">
+            AI Placement Assistant
+          </h1>
+
+          <p className="mt-2 text-slate-400">
+            Ask questions about your placement preparation.
+          </p>
+        </div>
+
+        <div className="flex-1 space-y-4 overflow-y-auto rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+
+          {messages.map((item, index) => (
+            <div
+              key={index}
+              className={`flex ${
+                item.role === "user"
+                  ? "justify-end"
+                  : "justify-start"
+              }`}
+            >
+              <div
+                className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-6 ${
+                  item.role === "user"
+                    ? "bg-cyan-400/10 text-cyan-100"
+                    : "border border-white/10 bg-white/[0.04] text-slate-200"
+                }`}
+              >
+                {item.text}
+              </div>
+            </div>
+          ))}
+
+          {loading && (
+            <div className="text-sm text-slate-500">
+              PlacementPro AI is thinking...
+            </div>
+          )}
+
+        </div>
+
+        <div className="mt-4 flex gap-3">
+
+          <input
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                sendMessage();
+              }
+            }}
+            placeholder="Ask about your placement preparation..."
+            className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white"
+          />
+
+          <button
+            onClick={sendMessage}
+            disabled={loading}
+            className="rounded-xl bg-cyan-400 px-6 py-3 font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-50"
+          >
+            Send
+          </button>
+
+        </div>
+
+      </div>
+    </section>
   );
 }
 

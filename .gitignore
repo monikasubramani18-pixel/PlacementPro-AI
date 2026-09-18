@@ -1,19 +1,14 @@
-# Python
-.venv/
-__pycache__/
-*.pyc
-
-# Environment files
 .env
 .env.local
 *.env
 
-# Node
+.venv/
+venv/
+__pycache__/
+*.pyc
+
 node_modules/
 dist/
 
-# Uploaded files
 uploads/
-
-# IDE
 .vscode/
